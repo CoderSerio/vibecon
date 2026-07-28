@@ -14,8 +14,9 @@
     "windows": [
       {
         "title": "VibeCon — Controller Debug Lab",
-        "width": 800,
-        "height": 600
+        "width": 1120,
+        "minWidth": 920,
+        "height": 760
       }
     ],
     "security": {

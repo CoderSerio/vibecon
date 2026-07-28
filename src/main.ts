@@ -45,7 +45,7 @@ function macOSJoyConHatLabel(entry: LogEntry): Annotation["label"] | undefined {
   // byte 3 is an eight-way stick HAT. Only apply this profile when the D-pad
   // and extra button byte are neutral, so button events remain labelable.
   const { report } = entry;
-  if (report.report_id !== 0x3f || report.bytes.length < 4 || report.bytes[1] !== 0 || report.bytes[2] !== 0) return undefined;
+  if (report.report_id !== 0x3f || report.bytes.length < 4) return undefined;
   const targets = ["outer-e", "outer-se", "outer-s", "outer-sw", "outer-w", "outer-nw", "outer-n", "outer-ne", "center"];
   const hat = report.bytes[3];
   if (hat > 8) return undefined;
@@ -53,10 +53,30 @@ function macOSJoyConHatLabel(entry: LogEntry): Annotation["label"] | undefined {
   // `08` is global neutral, not inherently a stick reset. Only infer reset
   // when the immediately preceding report was a neutral-button HAT direction.
   const previous = entry.previous_report;
-  if (previous?.report_id === 0x3f && previous.bytes.length >= 4 && previous.bytes[1] === 0 && previous.bytes[2] === 0 && previous.bytes[3] < 8) {
+  if (previous?.report_id === 0x3f && previous.bytes.length >= 4 && previous.bytes[3] < 8) {
     return { kind: "stick", target: "center", phase: "reset" };
   }
   return undefined;
+}
+const macOSButtonBits: Array<{ byte: 1 | 2; mask: number; target: string }> = [
+  { byte: 1, mask: 0x01, target: "joycon_left.dpad_left" }, { byte: 1, mask: 0x02, target: "joycon_left.dpad_down" },
+  { byte: 1, mask: 0x04, target: "joycon_left.dpad_up" }, { byte: 1, mask: 0x08, target: "joycon_left.dpad_right" },
+  { byte: 1, mask: 0x10, target: "joycon_left.sl" }, { byte: 1, mask: 0x20, target: "joycon_left.sr" },
+  { byte: 2, mask: 0x01, target: "joycon_left.minus" }, { byte: 2, mask: 0x04, target: "joycon_left.stick_press" },
+  { byte: 2, mask: 0x20, target: "joycon_left.capture" }, { byte: 2, mask: 0x40, target: "joycon_left.l" },
+  { byte: 2, mask: 0x80, target: "joycon_left.zl" },
+];
+function macOSJoyConButtonLabels(entry: LogEntry): Annotation["label"][] {
+  const { report, previous_report: previous } = entry;
+  if (report.report_id !== 0x3f || report.bytes.length < 3) return [];
+  const labels: Annotation["label"][] = [];
+  for (const { byte, mask, target } of macOSButtonBits) {
+    const current = report.bytes[byte];
+    const prior = previous?.report_id === 0x3f && previous.bytes.length > byte ? previous.bytes[byte] : 0;
+    if ((current & mask) !== 0) labels.push({ kind: "button", target, phase: "pressed" });
+    else if ((prior & mask) !== 0) labels.push({ kind: "button", target, phase: "released" });
+  }
+  return labels;
 }
 function renderStick(stick: Stick | null) { return stick ? `x ${stick.normalized_x.toFixed(3)}\ny ${stick.normalized_y.toFixed(3)}\nraw ${stick.x}, ${stick.y}` : "No decoded value"; }
 
@@ -74,8 +94,11 @@ function updateButtons(report: InputReport) {
   document.querySelectorAll<HTMLElement>("[data-control]").forEach((control) => control.classList.remove("active"));
   if (!report.buttons) { buttonsEl.value = "No decoded button data"; return; }
   const [buttonMask, extraButtons, hat] = report.buttons;
-  const directions: Record<string, number> = { left: 0x01, down: 0x02, up: 0x04, right: 0x08 };
-  for (const [direction, mask] of Object.entries(directions)) if ((buttonMask & mask) !== 0) document.querySelector(`[data-control="${direction}"]`)?.classList.add("active");
+  const controls: Array<[number, Record<string, number>]> = [
+    [buttonMask, { left: 0x01, down: 0x02, up: 0x04, right: 0x08, sl: 0x10, sr: 0x20 }],
+    [extraButtons, { minus: 0x01, stick_press: 0x04, capture: 0x20, l: 0x40, zl: 0x80 }],
+  ];
+  for (const [bits, mapping] of controls) for (const [control, mask] of Object.entries(mapping)) if ((bits & mask) !== 0) document.querySelector(`[data-control="${control}"]`)?.classList.add("active");
   buttonsEl.value = `D-pad 0x${hex(buttonMask)} · stick HAT ${hat === 8 ? "neutral" : hat} · extra 0x${hex(extraButtons)}`;
 }
 function appendLog(report: InputReport, previous_report?: InputReport) {
@@ -122,10 +145,10 @@ function renderLogs() {
     row.type = "button";
     row.className = "log-row";
     const key = fingerprint(entry.report);
-    const builtIn = macOSJoyConHatLabel(entry);
+    const builtIn = [...macOSJoyConButtonLabels(entry), ...[macOSJoyConHatLabel(entry)].filter((label): label is Annotation["label"] => Boolean(label))];
     const matches = annotations.filter((annotation) => annotation.previous_report ? Boolean(entry.previous_report) && fingerprint(annotation.previous_report) === fingerprint(entry.previous_report!) && fingerprint(annotation.report) === key : fingerprint(annotation.report) === key);
     const match = matches[matches.length - 1];
-    const tag = builtIn ? `<span class="annotation-tag built-in">${labelText(builtIn)}</span>` : match ? `<span class="annotation-tag${match.previous_report ? "" : " legacy"}">${labelText(match.label, !match.previous_report)}</span>` : "<span class=\"label-prompt\">Label</span>";
+    const tag = builtIn.length ? `<span class="annotation-tags">${builtIn.map((label) => `<span class="annotation-tag built-in">${labelText(label)}</span>`).join("")}</span>` : match ? `<span class="annotation-tag${match.previous_report ? "" : " legacy"}">${labelText(match.label, !match.previous_report)}</span>` : "<span class=\"label-prompt\">Label</span>";
     row.innerHTML = `<time>${entry.timestamp.toLocaleTimeString()}</time><code>report 0x${hex(entry.report.report_id)}  ${entry.report.bytes.map(hex).join(" ")}</code>${tag}`;
     row.addEventListener("click", () => openAnnotation(entry));
     transcriptEl.append(row);
@@ -184,7 +207,7 @@ function renderPicker() {
     }); pickerEl.append(radar);
   } else {
     const layout = document.createElement("div"); layout.className = "button-picker-layout";
-    layout.innerHTML = `<div class="annotation-joycon-wrap"><div class="joycon left annotation-joycon" aria-label="Joy-Con control reference"><div class="rail"></div><span class="label shoulder-label">L</span><span class="control shoulder" data-picker-control="joycon_left.zl">ZL</span><span class="control small sl" data-picker-control="joycon_left.sl">SL</span><span class="control small sr" data-picker-control="joycon_left.sr">SR</span><span class="control minus" data-picker-control="joycon_left.minus">−</span><span class="stick" data-picker-control="joycon_left.stick_press"><span class="stick-nub"></span></span><div class="dpad"><span class="control dpad-button up" data-picker-control="joycon_left.dpad_up">▲</span><span class="control dpad-button right" data-picker-control="joycon_left.dpad_right">▶</span><span class="control dpad-button down" data-picker-control="joycon_left.dpad_down">▼</span><span class="control dpad-button left" data-picker-control="joycon_left.dpad_left">◀</span></div><span class="control capture" data-picker-control="joycon_left.capture">●</span><span class="label capture-label">Capture</span></div></div>`;
+    layout.innerHTML = `<div class="annotation-joycon-wrap"><div class="joycon left annotation-joycon" aria-label="Joy-Con control reference"><div class="rail"></div><span class="control l" data-picker-control="joycon_left.l">L</span><span class="control shoulder" data-picker-control="joycon_left.zl">ZL</span><span class="control small sl" data-picker-control="joycon_left.sl">SL</span><span class="control small sr" data-picker-control="joycon_left.sr">SR</span><span class="control minus" data-picker-control="joycon_left.minus">−</span><span class="stick" data-picker-control="joycon_left.stick_press"><span class="stick-nub"></span></span><div class="dpad"><span class="control dpad-button up" data-picker-control="joycon_left.dpad_up">▲</span><span class="control dpad-button right" data-picker-control="joycon_left.dpad_right">▶</span><span class="control dpad-button down" data-picker-control="joycon_left.dpad_down">▼</span><span class="control dpad-button left" data-picker-control="joycon_left.dpad_left">◀</span></div><span class="control capture" data-picker-control="joycon_left.capture">●</span><span class="label capture-label">Capture</span></div></div>`;
     const rightColumn = document.createElement("div"); rightColumn.className = "button-picker-column";
     const phasePicker = document.createElement("div"); phasePicker.className = "phase-picker";
     (["pressed", "released"] as const).forEach((phase) => { const phaseButton = document.createElement("button"); phaseButton.type = "button"; phaseButton.className = phase === buttonPhase ? "selected" : ""; phaseButton.textContent = phase === "pressed" ? "Pressed" : "Released"; phaseButton.addEventListener("click", () => { buttonPhase = phase; renderPicker(); }); phasePicker.append(phaseButton); });

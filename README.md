@@ -45,6 +45,19 @@ profile, so these reports do not need manual per-direction labels.
 
 ![VibeCon showing the observed 0-8 HAT values in raw Joy-Con reports](./docs/images/macos-joycon-hat-debug.png)
 
+The same report has two independent button bitfields. Decode each byte with
+bitwise AND/OR; do not treat the complete report as one additive number.
+
+| Byte | Confirmed flags |
+| --- | --- |
+| 1 | `01` D-pad left, `02` down, `04` up, `08` right, `10` SL, `20` SR |
+| 2 | `01` Minus, `04` stick press, `20` Capture, `40` L, `80` ZL |
+| 3 | HAT `0–7` outer stick directions; `8` neutral |
+
+For example, `3F 08 40 08 ...` means **D-pad right + L**. The values share no
+bits, so bitwise OR happens to have the same numeric result as addition; OR is
+the correct operation and remains correct for every combination.
+
 ## Quick start — macOS
 
 ### 1. Pair a Joy-Con
