@@ -86,6 +86,8 @@ struct AnnotationLabel {
 #[derive(Deserialize)]
 struct AnnotationDraft {
     controller: AnnotationController,
+    #[serde(default)]
+    previous_report: Option<AnnotationReport>,
     report: AnnotationReport,
     label: AnnotationLabel,
 }
@@ -95,6 +97,8 @@ struct Annotation {
     version: u8,
     created_at_ms: u128,
     controller: AnnotationController,
+    #[serde(default)]
+    previous_report: Option<AnnotationReport>,
     report: AnnotationReport,
     label: AnnotationLabel,
 }
@@ -224,6 +228,7 @@ fn save_annotation(draft: AnnotationDraft) -> Result<Annotation, String> {
             .unwrap_or(Duration::ZERO)
             .as_millis(),
         controller: draft.controller,
+        previous_report: draft.previous_report,
         report: draft.report,
         label: draft.label,
     };

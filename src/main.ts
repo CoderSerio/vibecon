@@ -5,8 +5,8 @@ type Controller = { id: string; name: string; product_id: number; transport: str
 type Stick = { x: number; y: number; normalized_x: number; normalized_y: number };
 type InputReport = { report_id: number; bytes: number[]; left_stick: Stick | null; right_stick: Stick | null; buttons: [number, number, number] | null };
 type StreamEvent = { device_id: string; report: InputReport };
-type Annotation = { version: number; created_at_ms: number; controller: { vendor_id: number; product_id: number; orientation: string }; report: { report_id: number; bytes: number[] }; label: { kind: "stick" | "button"; target: string; phase?: "pressed" | "released" } };
-type LogEntry = { timestamp: Date; report: InputReport };
+type Annotation = { version: number; created_at_ms: number; controller: { vendor_id: number; product_id: number; orientation: string }; previous_report?: { report_id: number; bytes: number[] }; report: { report_id: number; bytes: number[] }; label: { kind: "stick" | "button"; target: string; phase?: "pressed" | "released" } };
+type LogEntry = { timestamp: Date; previous_report?: InputReport; report: InputReport };
 
 const controllersEl = document.querySelector<HTMLDivElement>("#controllers")!;
 const statusEl = document.querySelector<HTMLSpanElement>("#connection-status")!;
@@ -29,6 +29,7 @@ let unlistenInput: UnlistenFn | undefined;
 let unlistenError: UnlistenFn | undefined;
 let lastPresentedAt = 0;
 let lastKeyOperation: string | undefined;
+let lastIncomingReport: InputReport | undefined;
 let selectedLog: LogEntry | undefined;
 let annotationKind: "stick" | "button" = "stick";
 let annotationTarget: string | undefined;
@@ -37,7 +38,7 @@ const isTauriDesktop = "__TAURI_INTERNALS__" in window;
 
 function hex(byte: number) { return byte.toString(16).padStart(2, "0").toUpperCase(); }
 function fingerprint(report: { report_id: number; bytes: number[] }) { return `${report.report_id}:${report.bytes.map(hex).join("")}`; }
-function labelText(label: Annotation["label"]) { return label.kind === "stick" ? `Stick · ${label.target}` : `Button · ${label.target.replace("joycon_left.", "")} · ${label.phase ?? "pressed"}`; }
+function labelText(label: Annotation["label"], legacy = false) { const text = label.kind === "stick" ? `Stick · ${label.target}` : `Button · ${label.target.replace("joycon_left.", "")} · ${label.phase ?? "pressed"}`; return legacy ? `${text} · legacy raw` : text; }
 function renderStick(stick: Stick | null) { return stick ? `x ${stick.normalized_x.toFixed(3)}\ny ${stick.normalized_y.toFixed(3)}\nraw ${stick.x}, ${stick.y}` : "No decoded value"; }
 
 function renderReport(report: InputReport) {
@@ -58,8 +59,8 @@ function updateButtons(report: InputReport) {
   for (const [direction, mask] of Object.entries(directions)) if ((buttonMask & mask) !== 0) document.querySelector(`[data-control="${direction}"]`)?.classList.add("active");
   buttonsEl.value = `D-pad 0x${hex(buttonMask)} · stick HAT ${hat === 8 ? "neutral" : hat} · extra 0x${hex(extraButtons)}`;
 }
-function appendLog(report: InputReport) {
-  logs.unshift({ timestamp: new Date(), report });
+function appendLog(report: InputReport, previous_report?: InputReport) {
+  logs.unshift({ timestamp: new Date(), previous_report, report });
   logs = logs.slice(0, 160);
   renderLogs();
 }
@@ -102,8 +103,9 @@ function renderLogs() {
     row.type = "button";
     row.className = "log-row";
     const key = fingerprint(entry.report);
-    const matches = annotations.filter((annotation) => fingerprint(annotation.report) === key);
-    row.innerHTML = `<time>${entry.timestamp.toLocaleTimeString()}</time><code>report 0x${hex(entry.report.report_id)}  ${entry.report.bytes.map(hex).join(" ")}</code>${matches.length ? `<span class="annotation-tag">${labelText(matches[matches.length - 1].label)}</span>` : "<span class=\"label-prompt\">Label</span>"}`;
+    const matches = annotations.filter((annotation) => annotation.previous_report ? Boolean(entry.previous_report) && fingerprint(annotation.previous_report) === fingerprint(entry.previous_report!) && fingerprint(annotation.report) === key : fingerprint(annotation.report) === key);
+    const match = matches[matches.length - 1];
+    row.innerHTML = `<time>${entry.timestamp.toLocaleTimeString()}</time><code>report 0x${hex(entry.report.report_id)}  ${entry.report.bytes.map(hex).join(" ")}</code>${match ? `<span class="annotation-tag">${labelText(match.label, !match.previous_report)}</span>` : "<span class=\"label-prompt\">Label</span>"}`;
     row.addEventListener("click", () => openAnnotation(entry));
     transcriptEl.append(row);
   }
@@ -112,6 +114,7 @@ function renderLogs() {
 function selectController(controller: Controller) {
   selectedController = controller;
   lastKeyOperation = undefined;
+  lastIncomingReport = undefined;
   document.querySelectorAll<HTMLButtonElement>(".controller").forEach((button) => button.classList.toggle("selected", button.dataset.id === controller.id));
   statusEl.textContent = `Streaming ${controller.name}. Move a stick or press a button.`;
   statusEl.className = "status connected";
@@ -184,7 +187,7 @@ function chooseTarget(target: string) {
 async function saveAnnotation() {
   if (!selectedLog || !selectedController || !annotationTarget) return;
   try {
-    const annotation = await invoke<Annotation>("save_annotation", { draft: { controller: { vendor_id: 0x057e, product_id: selectedController.product_id, orientation: "portrait" }, report: { report_id: selectedLog.report.report_id, bytes: selectedLog.report.bytes }, label: { kind: annotationKind, target: annotationTarget, phase: annotationKind === "button" ? buttonPhase : undefined } } });
+    const annotation = await invoke<Annotation>("save_annotation", { draft: { controller: { vendor_id: 0x057e, product_id: selectedController.product_id, orientation: "portrait" }, previous_report: selectedLog.previous_report ? { report_id: selectedLog.previous_report.report_id, bytes: selectedLog.previous_report.bytes } : undefined, report: { report_id: selectedLog.report.report_id, bytes: selectedLog.report.bytes }, label: { kind: annotationKind, target: annotationTarget, phase: annotationKind === "button" ? buttonPhase : undefined } } });
     annotations.push(annotation); renderLogs(); modal.close();
   } catch (error) { annotationChoiceEl.textContent = `Save failed: ${String(error)}`; }
 }
@@ -201,7 +204,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (event.payload.device_id !== selectedController?.id) return;
     // The visualizer is deliberately independent of logging policy.
     renderReport(event.payload.report);
-    if (shouldLog(event.payload.report)) appendLog(event.payload.report);
+    const previous = lastIncomingReport;
+    lastIncomingReport = event.payload.report;
+    if (shouldLog(event.payload.report)) appendLog(event.payload.report, previous);
   });
   unlistenError = await listen<string>("joycon-stream-error", (event) => showError(event.payload));
   await refreshControllers();
