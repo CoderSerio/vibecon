@@ -5,7 +5,7 @@ type Controller = { id: string; name: string; product_id: number; transport: str
 type Stick = { x: number; y: number; normalized_x: number; normalized_y: number };
 type InputReport = { report_id: number; bytes: number[]; left_stick: Stick | null; right_stick: Stick | null; buttons: [number, number, number] | null };
 type StreamEvent = { device_id: string; report: InputReport };
-type Annotation = { version: number; created_at_ms: number; controller: { vendor_id: number; product_id: number; orientation: string }; report: { report_id: number; bytes: number[] }; label: { kind: "stick" | "button"; target: string } };
+type Annotation = { version: number; created_at_ms: number; controller: { vendor_id: number; product_id: number; orientation: string }; report: { report_id: number; bytes: number[] }; label: { kind: "stick" | "button"; target: string; phase?: "pressed" | "released" } };
 type LogEntry = { timestamp: Date; report: InputReport };
 
 const controllersEl = document.querySelector<HTMLDivElement>("#controllers")!;
@@ -32,11 +32,12 @@ let lastKeyOperation: string | undefined;
 let selectedLog: LogEntry | undefined;
 let annotationKind: "stick" | "button" = "stick";
 let annotationTarget: string | undefined;
+let buttonPhase: "pressed" | "released" = "pressed";
 const isTauriDesktop = "__TAURI_INTERNALS__" in window;
 
 function hex(byte: number) { return byte.toString(16).padStart(2, "0").toUpperCase(); }
 function fingerprint(report: { report_id: number; bytes: number[] }) { return `${report.report_id}:${report.bytes.map(hex).join("")}`; }
-function labelText(label: Annotation["label"]) { return label.kind === "stick" ? `Stick · ${label.target}` : `Button · ${label.target.replace("joycon_left.", "")}`; }
+function labelText(label: Annotation["label"]) { return label.kind === "stick" ? `Stick · ${label.target}` : `Button · ${label.target.replace("joycon_left.", "")} · ${label.phase ?? "pressed"}`; }
 function renderStick(stick: Stick | null) { return stick ? `x ${stick.normalized_x.toFixed(3)}\ny ${stick.normalized_y.toFixed(3)}\nraw ${stick.x}, ${stick.y}` : "No decoded value"; }
 
 function renderReport(report: InputReport) {
@@ -140,7 +141,7 @@ const buttonNames: Record<string, string> = {
   "joycon_left.minus": "Minus", "joycon_left.capture": "Capture", "joycon_left.sl": "SL", "joycon_left.sr": "SR", "joycon_left.l": "L", "joycon_left.zl": "ZL",
 };
 function openAnnotation(entry: LogEntry) {
-  selectedLog = entry; annotationKind = "stick"; annotationTarget = undefined; saveAnnotationEl.disabled = true;
+  selectedLog = entry; annotationKind = "stick"; annotationTarget = undefined; buttonPhase = "pressed"; saveAnnotationEl.disabled = true;
   selectedReportEl.textContent = `report 0x${hex(entry.report.report_id)} · ${entry.report.bytes.map(hex).join(" ")}`;
   document.querySelectorAll(".kind").forEach((kind) => kind.classList.toggle("active", (kind as HTMLElement).dataset.kind === annotationKind));
   renderPicker(); modal.showModal();
@@ -156,6 +157,10 @@ function renderPicker() {
   } else {
     const layout = document.createElement("div"); layout.className = "button-picker-layout";
     layout.innerHTML = `<div class="annotation-joycon-wrap"><div class="joycon left annotation-joycon" aria-label="Joy-Con control reference"><div class="rail"></div><span class="label shoulder-label">L</span><span class="control shoulder" data-picker-control="joycon_left.zl">ZL</span><span class="control small sl" data-picker-control="joycon_left.sl">SL</span><span class="control small sr" data-picker-control="joycon_left.sr">SR</span><span class="control minus" data-picker-control="joycon_left.minus">−</span><span class="stick" data-picker-control="joycon_left.stick_press"><span class="stick-nub"></span></span><div class="dpad"><span class="control dpad-button up" data-picker-control="joycon_left.dpad_up">▲</span><span class="control dpad-button right" data-picker-control="joycon_left.dpad_right">▶</span><span class="control dpad-button down" data-picker-control="joycon_left.dpad_down">▼</span><span class="control dpad-button left" data-picker-control="joycon_left.dpad_left">◀</span></div><span class="control capture" data-picker-control="joycon_left.capture">●</span><span class="label capture-label">Capture</span></div></div>`;
+    const rightColumn = document.createElement("div"); rightColumn.className = "button-picker-column";
+    const phasePicker = document.createElement("div"); phasePicker.className = "phase-picker";
+    (["pressed", "released"] as const).forEach((phase) => { const phaseButton = document.createElement("button"); phaseButton.type = "button"; phaseButton.className = phase === buttonPhase ? "selected" : ""; phaseButton.textContent = phase === "pressed" ? "Pressed" : "Released"; phaseButton.addEventListener("click", () => { buttonPhase = phase; renderPicker(); }); phasePicker.append(phaseButton); });
+    rightColumn.append(phasePicker);
     const picker = document.createElement("div"); picker.className = "button-picker";
     buttonTargets.forEach((target) => {
       const targetButton = document.createElement("button"); targetButton.type = "button"; targetButton.dataset.target = target; targetButton.textContent = buttonNames[target];
@@ -163,7 +168,7 @@ function renderPicker() {
       targetButton.addEventListener("mouseleave", () => previewControl(target, false));
       targetButton.addEventListener("click", () => chooseTarget(target)); picker.append(targetButton);
     });
-    layout.append(picker); pickerEl.append(layout);
+    rightColumn.append(picker); layout.append(rightColumn); pickerEl.append(layout);
   }
 }
 function previewControl(target: string, active: boolean) {
@@ -172,14 +177,14 @@ function previewControl(target: string, active: boolean) {
 }
 function chooseTarget(target: string) {
   annotationTarget = target; saveAnnotationEl.disabled = false;
-  annotationChoiceEl.textContent = `Selected: ${annotationKind === "stick" ? target : buttonNames[target]}`;
+  annotationChoiceEl.textContent = `Selected: ${annotationKind === "stick" ? target : `${buttonNames[target]} · ${buttonPhase}`}`;
   pickerEl.querySelectorAll("button").forEach((button) => button.classList.toggle("selected", button.getAttribute("title") === target || button.dataset.target === target));
   pickerEl.querySelectorAll<HTMLElement>("[data-picker-control]").forEach((control) => control.classList.toggle("picker-selected", control.dataset.pickerControl === target));
 }
 async function saveAnnotation() {
   if (!selectedLog || !selectedController || !annotationTarget) return;
   try {
-    const annotation = await invoke<Annotation>("save_annotation", { draft: { controller: { vendor_id: 0x057e, product_id: selectedController.product_id, orientation: "portrait" }, report: { report_id: selectedLog.report.report_id, bytes: selectedLog.report.bytes }, label: { kind: annotationKind, target: annotationTarget } } });
+    const annotation = await invoke<Annotation>("save_annotation", { draft: { controller: { vendor_id: 0x057e, product_id: selectedController.product_id, orientation: "portrait" }, report: { report_id: selectedLog.report.report_id, bytes: selectedLog.report.bytes }, label: { kind: annotationKind, target: annotationTarget, phase: annotationKind === "button" ? buttonPhase : undefined } } });
     annotations.push(annotation); renderLogs(); modal.close();
   } catch (error) { annotationChoiceEl.textContent = `Save failed: ${String(error)}`; }
 }

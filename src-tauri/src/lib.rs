@@ -79,6 +79,8 @@ struct AnnotationReport {
 struct AnnotationLabel {
     kind: String,
     target: String,
+    #[serde(default)]
+    phase: Option<String>,
 }
 
 #[derive(Deserialize)]
