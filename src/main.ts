@@ -135,6 +135,10 @@ async function refreshControllers() {
 
 const stickTargets = ["center", ...["n", "ne", "e", "se", "s", "sw", "w", "nw"].flatMap((direction) => [`inner-${direction}`, `outer-${direction}`])];
 const buttonTargets = ["joycon_left.stick_press", "joycon_left.dpad_up", "joycon_left.dpad_right", "joycon_left.dpad_down", "joycon_left.dpad_left", "joycon_left.minus", "joycon_left.capture", "joycon_left.sl", "joycon_left.sr", "joycon_left.l", "joycon_left.zl"];
+const buttonNames: Record<string, string> = {
+  "joycon_left.stick_press": "Stick press", "joycon_left.dpad_up": "D-pad up", "joycon_left.dpad_right": "D-pad right", "joycon_left.dpad_down": "D-pad down", "joycon_left.dpad_left": "D-pad left",
+  "joycon_left.minus": "Minus", "joycon_left.capture": "Capture", "joycon_left.sl": "SL", "joycon_left.sr": "SR", "joycon_left.l": "L", "joycon_left.zl": "ZL",
+};
 function openAnnotation(entry: LogEntry) {
   selectedLog = entry; annotationKind = "stick"; annotationTarget = undefined; saveAnnotationEl.disabled = true;
   selectedReportEl.textContent = `report 0x${hex(entry.report.report_id)} · ${entry.report.bytes.map(hex).join(" ")}`;
@@ -150,14 +154,27 @@ function renderPicker() {
       targetButton.addEventListener("click", () => chooseTarget(target)); radar.append(targetButton);
     }); pickerEl.append(radar);
   } else {
+    const layout = document.createElement("div"); layout.className = "button-picker-layout";
+    layout.innerHTML = `<div class="annotation-joycon-wrap"><div class="joycon left annotation-joycon" aria-label="Joy-Con control reference"><div class="rail"></div><span class="label shoulder-label">L</span><span class="control shoulder" data-picker-control="joycon_left.zl">ZL</span><span class="control small sl" data-picker-control="joycon_left.sl">SL</span><span class="control small sr" data-picker-control="joycon_left.sr">SR</span><span class="control minus" data-picker-control="joycon_left.minus">−</span><span class="stick" data-picker-control="joycon_left.stick_press"><span class="stick-nub"></span></span><div class="dpad"><span class="control dpad-button up" data-picker-control="joycon_left.dpad_up">▲</span><span class="control dpad-button right" data-picker-control="joycon_left.dpad_right">▶</span><span class="control dpad-button down" data-picker-control="joycon_left.dpad_down">▼</span><span class="control dpad-button left" data-picker-control="joycon_left.dpad_left">◀</span></div><span class="control capture" data-picker-control="joycon_left.capture">●</span><span class="label capture-label">Capture</span></div></div>`;
     const picker = document.createElement("div"); picker.className = "button-picker";
-    buttonTargets.forEach((target) => { const targetButton = document.createElement("button"); targetButton.type = "button"; targetButton.textContent = target.replace("joycon_left.", "").replace(/_/g, " "); targetButton.addEventListener("click", () => chooseTarget(target)); picker.append(targetButton); }); pickerEl.append(picker);
+    buttonTargets.forEach((target) => {
+      const targetButton = document.createElement("button"); targetButton.type = "button"; targetButton.dataset.target = target; targetButton.textContent = buttonNames[target];
+      targetButton.addEventListener("mouseenter", () => previewControl(target, true));
+      targetButton.addEventListener("mouseleave", () => previewControl(target, false));
+      targetButton.addEventListener("click", () => chooseTarget(target)); picker.append(targetButton);
+    });
+    layout.append(picker); pickerEl.append(layout);
   }
+}
+function previewControl(target: string, active: boolean) {
+  const control = pickerEl.querySelector<HTMLElement>(`[data-picker-control="${target}"]`);
+  control?.classList.toggle("preview-active", active);
 }
 function chooseTarget(target: string) {
   annotationTarget = target; saveAnnotationEl.disabled = false;
-  annotationChoiceEl.textContent = `Selected: ${annotationKind === "stick" ? target : target.replace("joycon_left.", "")}`;
-  pickerEl.querySelectorAll("button").forEach((button) => button.classList.toggle("selected", button.getAttribute("title") === target || button.textContent === target.replace("joycon_left.", "").replace(/_/g, " ")));
+  annotationChoiceEl.textContent = `Selected: ${annotationKind === "stick" ? target : buttonNames[target]}`;
+  pickerEl.querySelectorAll("button").forEach((button) => button.classList.toggle("selected", button.getAttribute("title") === target || button.dataset.target === target));
+  pickerEl.querySelectorAll<HTMLElement>("[data-picker-control]").forEach((control) => control.classList.toggle("picker-selected", control.dataset.pickerControl === target));
 }
 async function saveAnnotation() {
   if (!selectedLog || !selectedController || !annotationTarget) return;
