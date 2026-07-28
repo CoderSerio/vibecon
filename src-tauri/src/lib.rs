@@ -94,6 +94,27 @@ fn poll_joycon_input(id: String) -> Result<Option<InputReport>, String> {
 /// Keeping the complete report in the response makes this useful even when
 /// macOS exposes a different report mode or a non-standard controller.
 fn decode_standard_report(bytes: &[u8]) -> (Option<Stick>, Option<Stick>, Option<[u8; 3]>) {
+    if bytes.len() >= 12 && bytes[0] == 0x3f {
+        // macOS exposes paired Joy-Cons through its generic HID driver as a
+        // compact 0x3f report instead of Nintendo's native 0x30 report.
+        // Bytes 4...12 contain four little-endian 16-bit axes centred at 0x8000.
+        // Byte 2 is a button bitfield and byte 3 is an 8-way HAT (8 = neutral).
+        let decode_macos_axis = |offset: usize| {
+            let x = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+            let y = u16::from_le_bytes([bytes[offset + 2], bytes[offset + 3]]);
+            Stick {
+                x,
+                y,
+                normalized_x: (f32::from(x) - 32768.0) / 32767.0,
+                normalized_y: (f32::from(y) - 32768.0) / 32767.0,
+            }
+        };
+        return (
+            Some(decode_macos_axis(4)),
+            Some(decode_macos_axis(8)),
+            Some([bytes[2], bytes[3], 0]),
+        );
+    }
     if bytes.len() < 12 || bytes[0] != 0x30 {
         return (None, None, None);
     }

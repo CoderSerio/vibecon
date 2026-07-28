@@ -16,6 +16,7 @@ const transcriptEl = document.querySelector<HTMLPreElement>("#transcript")!;
 const leftStickEl = document.querySelector<HTMLOutputElement>("#left-stick")!;
 const rightStickEl = document.querySelector<HTMLOutputElement>("#right-stick")!;
 const buttonsEl = document.querySelector<HTMLOutputElement>("#buttons")!;
+const stickNub = document.querySelector<HTMLDivElement>("#stick-nub")!;
 
 let selectedController: Controller | undefined;
 let reports: string[] = [];
@@ -34,10 +35,38 @@ function renderStick(stick: Stick | null) {
 function renderReport(report: InputReport) {
   leftStickEl.value = renderStick(report.left_stick);
   rightStickEl.value = renderStick(report.right_stick);
-  buttonsEl.value = report.buttons ? report.buttons.map(hex).join("  ") : "No standard button data";
+  updateStickNub(report.left_stick);
+  updateButtons(report);
   reports.unshift(`${new Date().toLocaleTimeString()}  report 0x${hex(report.report_id)}  ${report.bytes.map(hex).join(" ")}`);
   reports = reports.slice(0, 80);
   transcriptEl.textContent = reports.join("\n");
+}
+
+function updateStickNub(stick: Stick | null) {
+  if (!stick) return;
+  const x = Math.max(-1, Math.min(1, stick.normalized_x));
+  const y = Math.max(-1, Math.min(1, stick.normalized_y));
+  stickNub.style.transform = `translate(${(x * 27).toFixed(1)}px, ${(y * 27).toFixed(1)}px)`;
+}
+
+function updateButtons(report: InputReport) {
+  document.querySelectorAll<HTMLElement>("[data-control]").forEach((control) => control.classList.remove("active"));
+  if (!report.buttons) {
+    buttonsEl.value = "No decoded button data";
+    return;
+  }
+
+  const [buttonMask, hat] = report.buttons;
+  // macOS's 0x3f report uses an eight-way HAT in byte 3. It is already a
+  // confirmed mapping for the D-pad; the remaining Joy-Con button bits will be
+  // named only after a guided recording pass.
+  const directions: Record<string, number[]> = {
+    up: [0, 1, 7], right: [1, 2, 3], down: [3, 4, 5], left: [5, 6, 7],
+  };
+  for (const [direction, hats] of Object.entries(directions)) {
+    if (hats.includes(hat)) document.querySelector(`[data-control="${direction}"]`)?.classList.add("active");
+  }
+  buttonsEl.value = `HAT ${hat === 8 ? "neutral" : hat} · buttons 0x${hex(buttonMask)}`;
 }
 
 function selectController(controller: Controller) {
