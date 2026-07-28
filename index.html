@@ -66,12 +66,35 @@
       </section>
 
       <section class="panel transcript-panel">
-        <div class="section-heading">
-          <h2>Raw input reports</h2>
-          <span>Latest 80 reports</span>
+        <div class="section-heading log-heading">
+          <div>
+            <h2>Raw input reports</h2>
+            <p class="hint">Click any report to label it. Clearing the view never deletes saved labels.</p>
+          </div>
+          <div class="log-actions">
+            <label>Presentation
+              <select id="sample-rate">
+                <option value="all">All reports</option>
+                <option value="60">60 Hz</option>
+                <option value="30" selected>30 Hz</option>
+                <option value="10">10 Hz</option>
+              </select>
+            </label>
+            <button id="clear-log" class="secondary">Clear</button>
+          </div>
         </div>
-        <pre id="transcript">Choose a Joy-Con, then move a stick or press a button.</pre>
+        <div id="transcript" class="transcript">Choose a Joy-Con, then move a stick or press a button.</div>
       </section>
     </main>
+    <dialog id="annotation-modal" class="annotation-modal">
+      <form method="dialog" class="modal-card">
+        <header><div><p class="eyebrow">ANNOTATE SAMPLE</p><h2>Give this report a meaning</h2></div><button class="secondary" value="cancel">Close</button></header>
+        <p id="selected-report" class="selected-report"></p>
+        <div class="annotation-kinds"><button type="button" data-kind="stick" class="kind active">Stick operation</button><button type="button" data-kind="button" class="kind">Button operation</button></div>
+        <div id="annotation-picker"></div>
+        <p id="annotation-choice" class="annotation-choice">Choose a fixed target.</p>
+        <footer><button id="save-annotation" type="button" disabled>Save annotation</button></footer>
+      </form>
+    </dialog>
   </body>
 </html>
