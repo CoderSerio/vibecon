@@ -17,13 +17,16 @@ importers:
       vue:
         specifier: ^3.5.40
         version: 3.5.40(typescript@5.6.3)
+      vue-router:
+        specifier: ^4.6.4
+        version: 4.6.4(vue@3.5.40(typescript@5.6.3))
     devDependencies:
       '@tauri-apps/cli':
         specifier: ^2
         version: 2.11.4
       '@vitejs/plugin-vue':
         specifier: ^6.0.8
-        version: 6.0.8(vite@6.4.3(jiti@2.7.0))(vue@3.5.40(typescript@5.6.3))
+        version: 6.0.8(vite@6.4.3(jiti@2.7.0)(yaml@2.9.0))(vue@3.5.40(typescript@5.6.3))
       prettier:
         specifier: ^3.9.6
         version: 3.9.6
@@ -32,10 +35,10 @@ importers:
         version: 5.6.3
       unocss:
         specifier: ^66.7.5
-        version: 66.7.5(vite@6.4.3(jiti@2.7.0))
+        version: 66.7.5(vite@6.4.3(jiti@2.7.0)(yaml@2.9.0))
       vite:
         specifier: ^6.0.3
-        version: 6.4.3(jiti@2.7.0)
+        version: 6.4.3(jiti@2.7.0)(yaml@2.9.0)
 
 packages:
 
@@ -703,6 +706,9 @@ packages:
   '@vue/compiler-ssr@3.5.40':
     resolution: {integrity: sha512-rrE5xiXG663+vHCHa3J9p2z5OcBRjXmoqenprJxAFQxg5pSshzeBiCE6pu46axapRJ2Adk0YDA2BRZVjiHXnhg==}
 
+  '@vue/devtools-api@6.6.4':
+    resolution: {integrity: sha512-sGhTPMuXqZ1rVOk32RylztWkfXTRhuS7vgAKv0zjqk8gbsHkJ7xfFf+jbySxt7tWObEJwyKaHMikV/WGDiQm8g==}
+
   '@vue/reactivity@3.5.40':
     resolution: {integrity: sha512-B7ot9UlUZOi1zbq61/LvE88ZLTV8IlajTdiZTAEiDQgrnIMIZoPr9kGw0Zw46ObW62O9+H/Be3kMbfb7kYPQZA==}
 
@@ -979,6 +985,11 @@ packages:
       yaml:
         optional: true
 
+  vue-router@4.6.4:
+    resolution: {integrity: sha512-Hz9q5sa33Yhduglwz6g9skT8OBPii+4bFn88w6J+J4MfEo4KRRpmiNG/hHHkdbRFlLBOqxN8y8gf2Fb0MTUgVg==}
+    peerDependencies:
+      vue: ^3.5.0
+
   vue@3.5.40:
     resolution: {integrity: sha512-+8PJ4SJXdn/cHGImF4CKdxlWHIN5Dkt7DoufRREM6h6uVCx2m7QxgcEQmmzyOK8A9mcafg7sFbJFYsdFVubTig==}
     peerDependencies:
@@ -989,6 +1000,11 @@ packages:
 
   webpack-virtual-modules@0.6.2:
     resolution: {integrity: sha512-66/V2i5hQanC51vBQKPH4aI8NMAcBW59FVBs+rC7eGHupMyfn34q7rZIE+ETlJ+XTevqfUhVVBgSUNSW2flEUQ==}
+
+  yaml@2.9.0:
+    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
 
 snapshots:
 
@@ -1463,7 +1479,7 @@ snapshots:
     dependencies:
       '@unocss/core': 66.7.5
 
-  '@unocss/vite@66.7.5(vite@6.4.3(jiti@2.7.0))':
+  '@unocss/vite@66.7.5(vite@6.4.3(jiti@2.7.0)(yaml@2.9.0))':
     dependencies:
       '@jridgewell/remapping': 2.3.5
       '@unocss/config': 66.7.5
@@ -1474,12 +1490,12 @@ snapshots:
       pathe: 2.0.3
       tinyglobby: 0.2.17
       unplugin-utils: 0.3.2
-      vite: 6.4.3(jiti@2.7.0)
+      vite: 6.4.3(jiti@2.7.0)(yaml@2.9.0)
 
-  '@vitejs/plugin-vue@6.0.8(vite@6.4.3(jiti@2.7.0))(vue@3.5.40(typescript@5.6.3))':
+  '@vitejs/plugin-vue@6.0.8(vite@6.4.3(jiti@2.7.0)(yaml@2.9.0))(vue@3.5.40(typescript@5.6.3))':
     dependencies:
       '@rolldown/pluginutils': 1.0.1
-      vite: 6.4.3(jiti@2.7.0)
+      vite: 6.4.3(jiti@2.7.0)(yaml@2.9.0)
       vue: 3.5.40(typescript@5.6.3)
 
   '@vue/compiler-core@3.5.40':
@@ -1511,6 +1527,8 @@ snapshots:
     dependencies:
       '@vue/compiler-dom': 3.5.40
       '@vue/shared': 3.5.40
+
+  '@vue/devtools-api@6.6.4': {}
 
   '@vue/reactivity@3.5.40':
     dependencies:
@@ -1780,7 +1798,7 @@ snapshots:
       quansync: 1.0.0
       unconfig-core: 7.5.0
 
-  unocss@66.7.5(vite@6.4.3(jiti@2.7.0)):
+  unocss@66.7.5(vite@6.4.3(jiti@2.7.0)(yaml@2.9.0)):
     dependencies:
       '@unocss/cli': 66.7.5
       '@unocss/core': 66.7.5
@@ -1798,7 +1816,7 @@ snapshots:
       '@unocss/transformer-compile-class': 66.7.5
       '@unocss/transformer-directives': 66.7.5
       '@unocss/transformer-variant-group': 66.7.5
-      '@unocss/vite': 66.7.5(vite@6.4.3(jiti@2.7.0))
+      '@unocss/vite': 66.7.5(vite@6.4.3(jiti@2.7.0)(yaml@2.9.0))
     transitivePeerDependencies:
       - vite
 
@@ -1814,7 +1832,7 @@ snapshots:
       picomatch: 4.0.5
       webpack-virtual-modules: 0.6.2
 
-  vite@6.4.3(jiti@2.7.0):
+  vite@6.4.3(jiti@2.7.0)(yaml@2.9.0):
     dependencies:
       esbuild: 0.25.12
       fdir: 6.5.0(picomatch@4.0.5)
@@ -1825,6 +1843,12 @@ snapshots:
     optionalDependencies:
       fsevents: 2.3.3
       jiti: 2.7.0
+      yaml: 2.9.0
+
+  vue-router@4.6.4(vue@3.5.40(typescript@5.6.3)):
+    dependencies:
+      '@vue/devtools-api': 6.6.4
+      vue: 3.5.40(typescript@5.6.3)
 
   vue@3.5.40(typescript@5.6.3):
     dependencies:
@@ -1837,3 +1861,6 @@ snapshots:
       typescript: 5.6.3
 
   webpack-virtual-modules@0.6.2: {}
+
+  yaml@2.9.0:
+    optional: true

@@ -1,63 +1,64 @@
-# VibeCon
+<p align="center">
+  <img src="./docs/images/logo.png" width="148" alt="VibeCon logo">
+</p>
 
-**把手柄变成可观察、可配置的 AI 编程控制台。**
+<h1 align="center">VibeCon</h1>
 
-VibeCon 的第一步很小，但刻意保持克制：先做一个原生桌面调试器，观察已经配对的 Nintendo Joy-Con 实际传来了什么输入，再决定怎样把它映射为窗口切换、Agent 中断或代码审阅操作。
+<p align="center">
+  把闲置手柄变成一块可观察、可配置的 Vibe Coding 控制台。
+</p>
 
-项目目前在 macOS 上开发和验证；Tauri + Rust 的边界让未来的 Windows 原生版本成为可能，而不是把核心能力锁死在 Swift/macOS 中。
+<p align="center">
+  <a href="#快速开始"><img src="https://img.shields.io/badge/platform-macOS%20%E4%BC%98%E5%85%88-111827?style=flat-square" alt="macOS 优先"></a>
+  <a href="#当前能力"><img src="https://img.shields.io/badge/status-%E5%AE%9E%E9%AA%8C%E6%80%A7-F97316?style=flat-square" alt="实验性"></a>
+  <a href="#windows"><img src="https://img.shields.io/badge/Windows-%E8%AE%A1%E5%88%92%E4%B8%AD-2563EB?style=flat-square" alt="Windows 计划中"></a>
+  <a href="./README.md"><img src="https://img.shields.io/badge/README-English-0AB9E6?style=flat-square" alt="English README"></a>
+</p>
 
-> 当前状态：早期原型，**只读**。它不会移动鼠标、注入按键、切换窗口、执行命令，或自动批准任何 Agent 操作。
+<p align="center"><a href="./README.md">English README</a></p>
 
-[English README](./README.md)
+<p align="center">
+  <img src="./docs/images/vibecon-debug-lab.png" width="860" alt="VibeCon Joy-Con 调试界面">
+</p>
 
-## 当前已经实现的能力
+> **早期原型。** 目前在 macOS 上开发、验证；Tauri + Rust 的结构为跨平台而设计，但 Windows 输入与窗口切换尚未实机验证。
 
-在 Tauri 原生桌面窗口中可以：
+## 它是什么？
 
-- 发现已连接的 Nintendo HID 设备，包括 `Joy-Con (L)` 与 `Joy-Con (R)`；
-- 选择一个控制器，持续读取最新的原始 HID 报文；
-- 对 Joy-Con 原生 `0x30` 报文，以及 macOS 通用 HID 暴露的 `0x3f` 报文，解码摇杆数据和按钮字节（当前 macOS 会将 Joy-Con (L) 摇杆量化为八向 HAT）；
-- 用原创 CSS Joy-Con 可视化展示主摇杆实时移动，并高亮已经确认的方向键 HAT 状态；
-- 持续保持一个 HID 设备连接，并将 report 推送到桌面 UI；
-- 在不降低底层物理采集频率的前提下，让可视化保持全速；日志可选择默认的关键操作、最初的 75ms 快照、60/30/10 Hz，或全部 report；
-- 点击某条 report，将其标为固定摇杆位置或 Joy-Con 按键；
-- 将标注追加写入 `~/.vibecon/annotations.jsonl`，并在之后命中相同 report 时显示标签。
-- 保留最近 80 条报文，便于复制和排查。
+VibeCon 从一个很朴素的想法开始：与其买一个昂贵又封闭的「Vibe Coding 键盘」，不如把已有的 Joy-Con 或其他手柄，变成一块真正可理解、可检查的物理控制面板。
 
-即使设备使用了意料之外的报文模式，界面也会保留原始字节。这是有意为之：控制器映射必须基于我们真实观察到的输入，而不是先猜一套按键布局。
+它不会一上来就自动化。第一步是把输入看清楚：原始 HID 报文、摇杆、按键高亮、采样频率和本地打标；之后再让你主动开启一项足够小、可以审阅的映射。
 
-### 已观测到的 macOS Joy-Con (L) HAT profile
+## 当前能力
 
-当前 macOS 蓝牙 HID 路径中，`0x3f` report 的第 4 个字节是完整的八向摇杆 HAT：`0–7` 对应八个外圈方向，`8` 表示中立。VibeCon 已内置这套竖握映射，因此这些方向不需要逐个手工打标。
+- 通过 Tauri/Rust 原生 HID 后端发现已配对的 **Joy-Con (L)** 和 **Joy-Con (R)**。
+- 可同时选中左右两只手柄；日志按一个时间戳分组，并对齐显示 L/R 两行报文。
+- 解码 Joy-Con 原生 `0x30` 与 macOS 紧凑 `0x3F` report，包括按钮 bitfield 和已观测到的八方向 HAT。
+- 原创 CSS Joy-Con 可视化：摇杆实时同步、按住高亮、短按有残影提示。
+- 日志策略可选：关键操作、旧版 75ms 快照、60/30/10 Hz 采样或每一条 report；也可以随时清空当前可见日志。
+- 对抓到的 report 打标：摇杆点位或按键按下/抬起。数据只保存在 `~/.vibecon/annotations.jsonl`，再次命中时会回显标签。
+- **实验性 macOS 映射：** 在 **Mappings** 页面显式开启后，用左摇杆大幅向右/向左推，触发下一个/上一个 `Cmd+Tab` 窗口；带冷却、需回中复位。开关配置会写入 `~/.vibecon/mapping-settings.json`，但 Debug 页面打开时会临时失效，避免干扰抓包。
 
-![VibeCon 中观测到的 0-8 HAT 原始 Joy-Con report](./docs/images/macos-joycon-hat-debug.png)
+### 已观测到的 Joy-Con 规律
 
-同一条 report 还有两组独立的按键位标志。应在每个字节内使用位运算
-AND/OR 解码，不能把整条 HEX 当成一个可以直接相加的数。
+当前 macOS 蓝牙 HID 路径中，紧凑 `0x3F` report 将 Joy-Con (L) 摇杆暴露为八方向 HAT：`0–7` 对应方向，`8` 是中立。按钮字节是 bitmask：应按字节使用位与/位或解析，不能把整条 HEX 当作一个可直接相加的数。
 
-| 字节 | 已确认的 bit 标志 |
-| --- | --- |
-| 1 | `01` 方向键左、`02` 下、`04` 上、`08` 右、`10` SL、`20` SR |
-| 2 | `01` Minus、`04` 摇杆按下、`20` Capture、`40` L、`80` ZL |
-| 3 | HAT `0–7` 为摇杆外圈方向；`8` 为中立 |
+![macOS 下观测到的 Joy-Con HAT report](./docs/images/macos-joycon-hat-debug.png)
 
-例如：`3F 08 40 08 ...` 表示 **方向键右 + L**。这些值没有重叠 bit，
-所以位或在数值上恰好等于相加；但正确的表达和解析方式始终是 OR。
-
-## macOS 快速开始
+## 快速开始
 
 ### 1. 配对 Joy-Con
 
 1. 将 Joy-Con 从 Switch 拆下并确保有电；
 2. 长按滑轨上的小圆形 **Sync** 键，直到玩家指示灯依次闪动；
 3. 打开 **系统设置 → 蓝牙**，连接 `Joy-Con (L)` 或 `Joy-Con (R)`；
-4. 需要调试两个手柄时，左右两侧分别配对。
+4. 需要同时调试两侧时，左右各自配对。
 
-如果蓝牙列表里找不到它：重新执行长按 Sync，并暂时让 Switch 远离或关机，避免 Joy-Con 自动回连 Switch。
+如果列表里没有它：重新长按 Sync，并暂时让 Switch 远离或关机，避免它抢先回连。
 
-### 2. 启动原生桌面壳
+### 2. 启动原生桌面应用
 
-前置条件：已安装 Node.js、pnpm 与 Rust toolchain。
+前置条件：已安装当前版本的 Node.js、pnpm 与 Rust toolchain。
 
 ```sh
 cd /Users/carbon/Desktop/vibecon
@@ -65,53 +66,61 @@ pnpm install
 pnpm tauri dev
 ```
 
-在打开的 VibeCon 窗口中点击 **Refresh controllers**，选择 Joy-Con，然后摇动摇杆或按下按键。下方的 **Raw input reports** 应开始刷新。
+点击 **Refresh controllers**，选中一个或两个 Joy-Con，然后摇动摇杆或按下按键。
 
-### 重要：不要用 `pnpm dev` 测硬件
+> 不要用 `pnpm dev` 测手柄。它只启动浏览器里的 Vite UI，没有 Tauri Rust 后端，也没有本地 HID 权限。
 
-`pnpm dev` 只会运行 Vite 浏览器预览，它适合看样式，但没有 Tauri 的 Rust 后端；因此没有 `invoke()`，也无法读取本地 HID 设备。
+## 开启 macOS 窗口切换权限
 
-要调试 Joy-Con，请使用：
+实验性映射通过 macOS `System Events` 发送 `Cmd+Tab`，因此必须授予系统权限。
+
+1. 先构建一次 debug App（得到固定的 app bundle）：
+
+   ```sh
+   pnpm tauri build --debug
+   ```
+
+2. 打开 **系统设置 → 隐私与安全性 → 辅助功能**。
+3. 点击 **+**，添加并开启：
+
+   ```text
+   /Users/carbon/Desktop/vibecon/src-tauri/target/debug/bundle/macos/VibeCon.app
+   ```
+
+4. 如果系统弹窗询问，请在 **隐私与安全性 → 自动化** 中允许 VibeCon 控制 **System Events**。
+5. 重启 `pnpm tauri dev`，进入 **Mappings** 页面，再手动勾选开关。
+
+映射现在会直接通过 macOS Quartz 发送快捷键，因此真正需要的是 **VibeCon 的辅助功能权限**；不再依赖额外的 `osascript` 自动化跳转。为了不干扰抓包，Debug 页面打开时映射会自动关闭。
+
+## 开发
 
 ```sh
-pnpm tauri dev
+pnpm build                    # TypeScript + Vite
+cd src-tauri && cargo check   # Rust/Tauri/HID 后端
 ```
-
-## 开发命令
-
-```sh
-pnpm build                    # 验证 TypeScript 与 Vite 构建
-cd src-tauri && cargo check   # 验证 Rust/Tauri/HID 后端
-```
-
-目录结构：
 
 ```text
-src/                    TypeScript 调试面板
-src-tauri/src/lib.rs    Rust 命令与 Joy-Con HID 解码
-src-tauri/              Tauri 配置、能力声明与桌面资源
-README_CN.md            中文文档
+src/App.vue                   Vue 调试与映射界面
+src/components/JoyCon.vue     实时 CSS 手柄可视化
+src-tauri/src/lib.rs          HID 流、Joy-Con 解码和原生命令
+docs/images/                  Logo 与 README 截图
 ```
 
-## 为什么是 Tauri + Rust
+## Windows
 
-- **优先服务 macOS 使用者：** 先在真实 Joy-Con 蓝牙/HID 行为上开发和验证；
-- **不放弃 Windows 朋友：** 桌面界面和控制器核心不依赖 Swift/macOS API，但 Windows 仍要在 Windows 机器或 CI 上完成构建、测试；
-- **先看见，再自动化：** 先把物理输入透明展示出来；之后才加入可审阅的明确映射，例如「摇杆左/右 → 前一个/后一个窗口」。
+桌面 UI 与控制器核心没有绑定 Swift 或 macOS API；但当前窗口切换只实现了 macOS，Windows 的 HID 行为也还需要真机测试。Windows 是明确目标，不是当前兼容性承诺。
 
-## 已规划，尚未实现
+## 接下来
 
-1. Joy-Con、DualSense、Xbox、8BitDo 的 profile 发现；
-2. 控制器校准和可视化按键/轴映射；
-3. 可选的平台动作适配层，例如前一个/后一个窗口；
-4. 未来任何 Agent 批准动作，都必须有明确的手柄物理确认。
+- Joy-Con、DualSense、Xbox、8BitDo 的 profile 与校准；
+- 更多明确、可审阅、按平台申请权限的映射；
+- 空间 / 动作输入探索；
+- 可导出、可共享的控制器 profile。
 
-## 隐私与安全
+## 隐私
 
-当前 VibeCon 只读取本地手柄输入：不发送遥测，不模拟鼠标或键盘，不执行 shell 命令，也不自动批准 Agent 操作。
-
-标注是本地采样数据，不是可执行映射。**Clear** 只清空当前可见日志，绝不会删除 `~/.vibecon/annotations.jsonl`。
+手柄 report 与打标都只保留在本地，VibeCon 不发送遥测。现在唯一会自动执行的行为，是你明确开启的实验性 macOS 窗口切换；它不会执行 shell 命令，也不会自动批准 AI Agent 操作。
 
 ## License
 
-等第一个真正可用的控制器 profile 验证完成后，再选择开源许可证。
+等第一个通用控制器 profile 得到验证后，再确定开源许可证。

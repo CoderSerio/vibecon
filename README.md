@@ -1,79 +1,64 @@
-# VibeCon
+<p align="center">
+  <img src="./docs/images/logo.png" width="148" alt="VibeCon logo">
+</p>
 
-**Use a controller as an inspectable control surface for AI-assisted coding.**
+<h1 align="center">VibeCon</h1>
 
-VibeCon begins with a small but deliberate first step: a native desktop lab for
-observing a paired Nintendo Joy-Con before mapping it to any action. It is being
-built and validated on macOS, while its Tauri and Rust architecture keeps a
-native Windows build in scope.
+<p align="center">
+  Turn an unused controller into an inspectable control surface for vibe coding.
+</p>
 
-> Status: early prototype. It is **read-only**. It does not move the pointer,
-> inject keystrokes, switch windows, execute commands, or approve agent actions.
+<p align="center">
+  <a href="#quick-start"><img src="https://img.shields.io/badge/platform-macOS%20first-111827?style=flat-square" alt="macOS first"></a>
+  <a href="#current-capabilities"><img src="https://img.shields.io/badge/status-experimental-F97316?style=flat-square" alt="experimental"></a>
+  <a href="#windows"><img src="https://img.shields.io/badge/Windows-planned-2563EB?style=flat-square" alt="Windows planned"></a>
+  <a href="./README_CN.md"><img src="https://img.shields.io/badge/README-%E4%B8%AD%E6%96%87-0AB9E6?style=flat-square" alt="Chinese README"></a>
+</p>
 
-[中文文档](./README_CN.md)
+<p align="center"><a href="./README_CN.md">中文文档</a></p>
 
-## What works today
+<p align="center">
+  <img src="./docs/images/vibecon-debug-lab.png" width="860" alt="VibeCon's Joy-Con debug interface">
+</p>
 
-Run the Tauri desktop app to:
+> **Early prototype.** Built and tested on macOS; the Tauri + Rust architecture is intentionally portable, but Windows input and window-switching have not yet been validated.
 
-- find connected Nintendo HID devices, including `Joy-Con (L)` and `Joy-Con (R)`;
-- select a controller and stream its latest raw HID reports;
-- show decoded stick values and button bytes for native Joy-Con `0x30` reports
-  and macOS generic-HID `0x3f` reports (macOS currently quantizes Joy-Con (L)
-  stick movement into an eight-way HAT);
-- render an original CSS Joy-Con visualizer whose primary stick follows the
-  live axis and whose confirmed D-pad HAT states glow;
-- keep one HID device handle open and forward input reports to the desktop UI;
-- keep the visualizer at full input rate while choosing a log policy: key
-  operations (the default), the original 75ms snapshots, 60/30/10 Hz samples,
-  or every raw report;
-- click a report to label it as a fixed stick position or Joy-Con control;
-- append labels to `~/.vibecon/annotations.jsonl`, then show matching labels
-  next to later reports.
-- retain the latest 80 reports for copying and diagnosis.
+## What is it?
 
-The raw report remains visible even when a controller uses an unexpected report
-mode. That is intentional: we should map controls from observed input, rather
-than guessing a device layout.
+VibeCon starts from a simple idea: a Joy-Con—or another controller you already own—can be a better physical control surface for AI-assisted coding than an expensive, opaque keyboard.
 
-### Observed macOS Joy-Con (L) HAT profile
+Before it automates anything, VibeCon makes the controller observable: raw HID reports, live sticks, button highlights, sampling, and local labels. Then you can opt into a small, reviewable mapping.
 
-On the current macOS Bluetooth HID path, `0x3f` report byte 3 is a complete
-eight-way stick HAT: values `0` through `7` are the eight outer directions and
-`8` is neutral. VibeCon includes this portrait-orientation mapping as a built-in
-profile, so these reports do not need manual per-direction labels.
+## Current capabilities
 
-![VibeCon showing the observed 0-8 HAT values in raw Joy-Con reports](./docs/images/macos-joycon-hat-debug.png)
+- Detect paired **Joy-Con (L)** and **Joy-Con (R)** devices through the native Tauri/Rust HID backend.
+- Inspect one or both controllers at once; grouped logs keep a single timestamp with aligned L/R report rows.
+- Decode native `0x30` and macOS compact `0x3F` Joy-Con reports, including button bitfields and the observed eight-way HAT profile.
+- Visualize both Joy-Cons in CSS: sticks move live; held controls glow and taps briefly persist as afterglow.
+- Choose a log policy: key operations, legacy 75 ms snapshots, 60/30/10 Hz samples, or every report; clear the visible log whenever needed.
+- Label captured reports as stick positions or button press/release samples. Labels are stored locally in `~/.vibecon/annotations.jsonl` and shown again for matching reports.
+- **Experimental macOS mapping:** while on the **Mappings** tab, firmly push the left stick right/left for next/previous `Cmd+Tab` window switching. Its opt-in configuration persists in `~/.vibecon/mapping-settings.json`, but is temporarily inactive while the Debug page is open.
 
-The same report has two independent button bitfields. Decode each byte with
-bitwise AND/OR; do not treat the complete report as one additive number.
+### Observed Joy-Con notes
 
-| Byte | Confirmed flags |
-| --- | --- |
-| 1 | `01` D-pad left, `02` down, `04` up, `08` right, `10` SL, `20` SR |
-| 2 | `01` Minus, `04` stick press, `20` Capture, `40` L, `80` ZL |
-| 3 | HAT `0–7` outer stick directions; `8` neutral |
+On the current macOS Bluetooth HID path, compact `0x3F` reports expose Joy-Con (L)'s stick as an eight-way HAT: values `0–7` are directions and `8` is neutral. Button fields are bitmasks—decode each byte with bitwise AND/OR, not as one additive HEX value.
 
-For example, `3F 08 40 08 ...` means **D-pad right + L**. The values share no
-bits, so bitwise OR happens to have the same numeric result as addition; OR is
-the correct operation and remains correct for every combination.
+![Observed macOS Joy-Con HAT reports](./docs/images/macos-joycon-hat-debug.png)
 
-## Quick start — macOS
+## Quick start
 
 ### 1. Pair a Joy-Con
 
 1. Detach and charge the Joy-Con.
-2. Hold its small **Sync** button until the player LEDs sweep.
-3. Open **System Settings → Bluetooth** and connect `Joy-Con (L)` or
-   `Joy-Con (R)`.
-4. Pair each side separately if you want to inspect both.
+2. Hold the small **Sync** button until the player LEDs sweep.
+3. Open **System Settings → Bluetooth** and connect `Joy-Con (L)` or `Joy-Con (R)`.
+4. Pair both sides separately to inspect both simultaneously.
 
-If it does not appear, repeat the Sync step and temporarily keep the Switch
-away or powered down so it does not reconnect there first.
+If it does not appear, repeat Sync and keep the Switch away or powered down so it cannot reconnect first.
 
-### 2. Start the native desktop shell
+### 2. Run the native app
 
-Prerequisites: current Node.js + pnpm and a Rust toolchain.
+Requires current Node.js, pnpm, and a Rust toolchain.
 
 ```sh
 cd /Users/carbon/Desktop/vibecon
@@ -81,56 +66,61 @@ pnpm install
 pnpm tauri dev
 ```
 
-Click **Refresh controllers**, select a Joy-Con, then move a stick or press a
-button. The Raw input reports panel should begin to update.
+Click **Refresh controllers**, select one or both Joy-Cons, then move a stick or press a button.
 
-### Important: do not use `pnpm dev` for hardware testing
+> Do not use `pnpm dev` for controller testing. It starts only the browser UI, without Tauri's Rust backend or local HID access.
 
-`pnpm dev` launches only Vite in a web browser. Browser preview is useful for
-styling, but it has no Tauri Rust backend and therefore no `invoke()` or local
-HID access. Use **`pnpm tauri dev`** to launch the native macOS window.
+## Enable macOS window switching
+
+The experimental mapping uses macOS `System Events` to send `Cmd+Tab`. macOS requires explicit permission.
+
+1. Build a debug app once (this produces a stable app bundle):
+
+   ```sh
+   pnpm tauri build --debug
+   ```
+
+2. Open **System Settings → Privacy & Security → Accessibility**.
+3. Click **+**, add and enable:
+
+   ```text
+   /Users/carbon/Desktop/vibecon/src-tauri/target/debug/bundle/macos/VibeCon.app
+   ```
+
+4. If macOS asks, allow VibeCon to control **System Events** under **Privacy & Security → Automation**.
+5. Restart `pnpm tauri dev`, open **Mappings**, and explicitly enable the checkbox.
+
+The mapping now posts the shortcut directly through macOS Quartz, so **Accessibility for VibeCon** is the permission that matters; it does not depend on a separate `osascript` Automation hop. The mapping is deliberately disabled while the Debug page is open to avoid corrupting controller inspection.
 
 ## Development
 
 ```sh
-pnpm build                    # TypeScript + Vite production build
+pnpm build                    # TypeScript + Vite
 cd src-tauri && cargo check   # Rust/Tauri/HID backend
 ```
 
-Project layout:
-
 ```text
-src/                    TypeScript input dashboard
-src-tauri/src/lib.rs    Rust commands and Joy-Con HID decoding
-src-tauri/              Tauri configuration, capabilities, desktop resources
-README_CN.md            Chinese documentation
+src/App.vue             Vue debug and mapping UI
+src/components/JoyCon.vue  Live CSS controller visualizer
+src-tauri/src/lib.rs    HID stream, Joy-Con decoding, native commands
+docs/images/            Logo and README screenshots
 ```
 
-## Why Tauri + Rust
+## Windows
 
-- **macOS first:** develop against the Joy-Con and its actual Bluetooth/HID
-  behaviour on the author's machine.
-- **Windows possible:** the desktop UI and controller core are not tied to
-  Swift/macOS APIs. Windows must still be built and tested on Windows or CI.
-- **Trust before automation:** first expose physical input clearly; only then
-  add deliberate, reviewable mappings such as stick-left/right → window switch.
+The desktop UI and controller logic are not tied to Swift or macOS APIs. However, the current window mapping is macOS-only and Windows HID behavior still needs real-device testing. Windows support is a product goal—not a claim of current compatibility.
 
-## Planned, not implemented
+## Roadmap
 
-1. profile discovery for Joy-Con, DualSense, Xbox, and 8BitDo controllers;
-2. controller calibration and a visual button/axis map;
-3. opt-in platform adapters for actions such as next/previous window;
-4. explicit, physical confirmation for any future agent approval action.
+- Profiles and calibration for Joy-Con, DualSense, Xbox, and 8BitDo.
+- More deliberate mappings, with clear per-platform permissions.
+- Spatial / motion input exploration.
+- Exportable, shareable controller profiles.
 
-## Privacy and safety
+## Privacy
 
-VibeCon currently reads local controller input only. It sends no telemetry and
-does not automate keyboard, mouse, shell, or agent approval actions.
-
-Annotations are local samples, not executable mappings. **Clear** only clears
-the current visible log; it never deletes `~/.vibecon/annotations.jsonl`.
+Controller reports and annotations remain local. VibeCon sends no telemetry. The only automated action today is the explicitly enabled experimental macOS window switch; it does not execute shell commands or approve AI-agent actions.
 
 ## License
 
-License selection is intentionally deferred until the first usable controller
-profile exists.
+License selection is intentionally deferred until the first general-purpose controller profile is validated.

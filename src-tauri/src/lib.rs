@@ -12,6 +12,18 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(target_os = "macos")]
+use core_graphics::{
+    event::{CGEvent, CGEventFlags, CGEventTapLocation},
+    event_source::{CGEventSource, CGEventSourceStateID},
+};
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+}
 use tauri::Emitter;
 
 const NINTENDO_VENDOR_ID: u16 = 0x057e;
@@ -103,6 +115,19 @@ struct Annotation {
     label: AnnotationLabel,
 }
 
+#[derive(Deserialize, Serialize)]
+struct MappingSettings {
+    window_switch_enabled: bool,
+}
+
+impl Default for MappingSettings {
+    fn default() -> Self {
+        Self {
+            window_switch_enabled: false,
+        }
+    }
+}
+
 fn display_name(product_id: u16) -> &'static str {
     match product_id {
         JOYCON_LEFT_PRODUCT_ID => "Joy-Con (L)",
@@ -115,8 +140,8 @@ fn open_api() -> Result<HidApi, String> {
     HidApi::new().map_err(|error| format!("Cannot access HID devices: {error}"))
 }
 
-fn report_from_bytes(bytes: Vec<u8>) -> InputReport {
-    let (left_stick, right_stick, buttons) = decode_joycon_report(&bytes);
+fn report_from_bytes(bytes: Vec<u8>, product_id: u16) -> InputReport {
+    let (left_stick, right_stick, buttons) = decode_joycon_report(&bytes, product_id);
     InputReport {
         report_id: bytes[0],
         bytes,
@@ -174,7 +199,7 @@ fn start_joycon_stream(
                 if count > 0 {
                     let event = StreamEvent {
                         device_id: id.clone(),
-                        report: report_from_bytes(buffer[..count].to_vec()),
+                    report: report_from_bytes(buffer[..count].to_vec(), info.product_id()),
                     };
                     let _ = app.emit("joycon-input", event);
                 }
@@ -198,14 +223,129 @@ fn stop_joycon_stream(state: tauri::State<StreamState>, id: Option<String>) {
     }
 }
 
+#[tauri::command]
+fn switch_window(direction: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if !macos_accessibility_trusted() {
+            return Err("Accessibility is not granted to this running VibeCon process. Quit the app, enable VibeCon.app in System Settings → Privacy & Security → Accessibility, then reopen VibeCon.app.".to_owned());
+        }
+        // Post the shortcut directly through Quartz instead of spawning
+        // `osascript`. This uses the Accessibility permission granted to
+        // VibeCon itself and keeps the HID reader responsive.
+        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+            .map_err(|_| "Could not create a macOS keyboard event source")?;
+        let modifiers = if direction == "previous" {
+            CGEventFlags::CGEventFlagCommand | CGEventFlags::CGEventFlagShift
+        } else {
+            CGEventFlags::CGEventFlagCommand
+        };
+        // System shortcuts such as Cmd+Tab need real modifier key transitions.
+        // Setting flags on the Tab event alone is enough for text input but
+        // is not reliably accepted by macOS's application switcher.
+        post_key(&source, 55, true, CGEventFlags::CGEventFlagCommand)?; // Command down
+        if direction == "previous" {
+            post_key(&source, 56, true, modifiers)?; // Shift down
+        }
+        post_key(&source, 48, true, modifiers)?; // Tab down
+        post_key(&source, 48, false, modifiers)?; // Tab up
+        if direction == "previous" {
+            post_key(&source, 56, false, CGEventFlags::CGEventFlagCommand)?; // Shift up
+        }
+        post_key(&source, 55, false, CGEventFlags::CGEventFlagNull)?; // Command up
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = direction;
+        Err("Window switching is not implemented for this platform yet".to_owned())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn post_key(
+    source: &CGEventSource,
+    key_code: u16,
+    key_down: bool,
+    flags: CGEventFlags,
+) -> Result<(), String> {
+    let event = CGEvent::new_keyboard_event(source.clone(), key_code, key_down)
+        .map_err(|_| "Could not create a macOS keyboard event")?;
+    event.set_flags(flags);
+    event.post(CGEventTapLocation::HID);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_accessibility_trusted() -> bool {
+    // SAFETY: AXIsProcessTrusted has no arguments and only reports TCC state.
+    unsafe { AXIsProcessTrusted() }
+}
+
+#[tauri::command]
+fn mapping_accessibility_status() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(if macos_accessibility_trusted() {
+            "Accessibility: granted to this running VibeCon process.".to_owned()
+        } else {
+            format!(
+                "Accessibility: not granted to this running process. Remove the old VibeCon entry, then add this exact app and reopen it: {}",
+                running_app_path(),
+            )
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Window switching is not implemented for this platform yet".to_owned())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn running_app_path() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.ancestors().nth(3).map(|app| app.display().to_string()))
+        .unwrap_or_else(|| "could not determine the current VibeCon.app path".to_owned())
+}
+
 fn annotation_path() -> Result<PathBuf, String> {
+    vibecon_data_directory().map(|directory| directory.join("annotations.jsonl"))
+}
+
+fn vibecon_data_directory() -> Result<PathBuf, String> {
     let home = env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
         .ok_or("Could not determine the home directory for VibeCon annotations")?;
     let directory = PathBuf::from(home).join(".vibecon");
     fs::create_dir_all(&directory)
         .map_err(|error| format!("Could not create ~/.vibecon: {error}"))?;
-    Ok(directory.join("annotations.jsonl"))
+    Ok(directory)
+}
+
+fn mapping_settings_path() -> Result<PathBuf, String> {
+    vibecon_data_directory().map(|directory| directory.join("mapping-settings.json"))
+}
+
+#[tauri::command]
+fn load_mapping_settings() -> Result<MappingSettings, String> {
+    let path = mapping_settings_path()?;
+    if !path.exists() {
+        return Ok(MappingSettings::default());
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|error| format!("Could not read mapping settings: {error}"))?;
+    serde_json::from_str(&content)
+        .map_err(|error| format!("Invalid mapping settings in {}: {error}", path.display()))
+}
+
+#[tauri::command]
+fn save_mapping_settings(settings: MappingSettings) -> Result<(), String> {
+    let path = mapping_settings_path()?;
+    let serialized = serde_json::to_string_pretty(&settings)
+        .map_err(|error| format!("Could not encode mapping settings: {error}"))?;
+    fs::write(&path, format!("{serialized}\n"))
+        .map_err(|error| format!("Could not write mapping settings: {error}"))
 }
 
 #[tauri::command]
@@ -254,7 +394,7 @@ fn save_annotation(draft: AnnotationDraft) -> Result<Annotation, String> {
 
 /// Native Joy-Con 0x30 reports carry packed 12-bit axes. macOS's generic HID
 /// driver currently exposes paired Joy-Con (L) through a compact 0x3f report.
-fn decode_joycon_report(bytes: &[u8]) -> (Option<Stick>, Option<Stick>, Option<[u8; 3]>) {
+fn decode_joycon_report(bytes: &[u8], product_id: u16) -> (Option<Stick>, Option<Stick>, Option<[u8; 3]>) {
     if bytes.len() >= 12 && bytes[0] == 0x3f {
         let decode_macos_axis = |offset: usize| {
             let x = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
@@ -288,11 +428,13 @@ fn decode_joycon_report(bytes: &[u8]) -> (Option<Stick>, Option<Stick>, Option<[
                 normalized_y,
             }
         };
-        return (
-            Some(stick_from_hat(bytes[3])),
-            Some(decode_macos_axis(4)),
-            Some([bytes[1], bytes[2], bytes[3]]),
-        );
+        let hat_stick = stick_from_hat(bytes[3]);
+        let axes_stick = decode_macos_axis(4);
+        return if product_id == JOYCON_RIGHT_PRODUCT_ID {
+            (Some(axes_stick), Some(hat_stick), Some([bytes[1], bytes[2], bytes[3]]))
+        } else {
+            (Some(hat_stick), Some(axes_stick), Some([bytes[1], bytes[2], bytes[3]]))
+        };
     }
     if bytes.len() < 12 || bytes[0] != 0x30 {
         return (None, None, None);
@@ -323,6 +465,10 @@ pub fn run() {
             list_joycons,
             start_joycon_stream,
             stop_joycon_stream,
+            switch_window,
+            mapping_accessibility_status,
+            load_mapping_settings,
+            save_mapping_settings,
             load_annotations,
             save_annotation
         ])

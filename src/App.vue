@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import JoyCon from "./components/JoyCon.vue";
@@ -43,8 +43,11 @@ type Annotation = {
   label: Label;
 };
 type StreamEvent = { device_id: string; report: InputReport };
+type MappingSettings = { window_switch_enabled: boolean };
 
 const isTauriDesktop = "__TAURI_INTERNALS__" in window;
+const activePage = ref<"debug" | "mappings">("debug");
+const windowSwitchEnabled = ref(false);
 const controllers = ref<Controller[]>([]);
 const selectedControllers = ref<Controller[]>([]);
 const status = ref("Looking for Nintendo HID devices…");
@@ -68,6 +71,7 @@ const dialog = ref<HTMLDialogElement>();
 const selectedLog = ref<LogEntry>();
 const annotationKind = ref<"stick" | "button">("stick");
 const annotationTarget = ref<string>();
+const mappingFeedback = ref("Enable the mapping, then return the stick to center before each trigger.");
 const buttonPhase = ref<"pressed" | "released">("pressed");
 const stickPhase = ref<"moved" | "reset">("moved");
 const previewTarget = ref<string>();
@@ -77,6 +81,18 @@ const lastPresentedAt = new Map<string, number>();
 const lastKeyOperation = new Map<string, string>();
 const lastIncomingReport = new Map<string, InputReport>();
 let recentControlsTimer: ReturnType<typeof setTimeout> | undefined;
+let windowSwitchArmed = true;
+let lastWindowSwitchAt = 0;
+
+watch(activePage, (page) => {
+  if (page === "mappings") void checkMappingAccessibility();
+});
+watch(windowSwitchEnabled, (window_switch_enabled) => {
+  if (!isTauriDesktop) return;
+  void invoke("save_mapping_settings", { settings: { window_switch_enabled } }).catch(
+    showError,
+  );
+});
 
 const stickTargets = [
   "center",
@@ -174,7 +190,7 @@ function formatReport(report: InputReport) {
   const chunks = report.bytes
     .map(hex)
     .reduce<string[]>((lines, byte, index) => {
-    const line = Math.floor(index / 26);
+      const line = Math.floor(index / 26);
       lines[line] = `${lines[line] ? `${lines[line]} ` : ""}${byte}`;
       return lines;
     }, []);
@@ -232,6 +248,33 @@ const macOSButtonBits: Array<{ byte: 1 | 2; mask: number; target: string }> = [
   { byte: 2, mask: 0x80, target: "joycon_left.zl" },
 ];
 function macOSJoyConButtonLabels(entry: LogEntry): Label[] {
+  const isRight =
+    controllers.value.find(({ id }) => id === entry.device_id)?.product_id ===
+    0x2007;
+  if (entry.report.report_id === 0x3f && isRight) {
+    const bits = [
+      { byte: 1 as const, mask: 0x01, target: "joycon_right.y" },
+      { byte: 1 as const, mask: 0x02, target: "joycon_right.x" },
+      { byte: 1 as const, mask: 0x04, target: "joycon_right.b" },
+      { byte: 1 as const, mask: 0x08, target: "joycon_right.a" },
+      { byte: 1 as const, mask: 0x10, target: "joycon_right.sr" },
+      { byte: 1 as const, mask: 0x20, target: "joycon_right.sl" },
+      { byte: 1 as const, mask: 0x40, target: "joycon_right.r" },
+      { byte: 1 as const, mask: 0x80, target: "joycon_right.zr" },
+    ];
+    return bits.flatMap(({ byte, mask, target }) => {
+      const current = entry.report.bytes[byte];
+      const prior =
+        entry.previous_report?.report_id === 0x3f
+          ? entry.previous_report.bytes[byte]
+          : 0;
+      return current & mask
+        ? [{ kind: "button" as const, target, phase: "pressed" as const }]
+        : prior & mask
+          ? [{ kind: "button" as const, target, phase: "released" as const }]
+          : [];
+    });
+  }
   if (entry.report.report_id === 0x30 && entry.report.bytes.length >= 6) {
     const nativeBits: Array<{ byte: 3 | 4 | 5; mask: number; target: string }> =
       [
@@ -337,6 +380,7 @@ function applyReport(report: InputReport, controller: Controller) {
   const side = controller.product_id === 0x2007 ? "right" : "left";
   if (side === "left") leftStick.value = report.left_stick;
   else rightStick.value = report.right_stick;
+  if (side === "left") maybeSwitchWindow(report.left_stick);
   if (!report.buttons) {
     activeControlsBySide.value[side] = [];
     buttonsReadout.value = "No decoded button data";
@@ -399,6 +443,41 @@ function applyReport(report: InputReport, controller: Controller) {
     buttonsReadout.value = `Native 0x30 · R 0x${hex(buttonMask)} · shared 0x${hex(extraButtons)} · L 0x${hex(hat)}`;
     return;
   }
+  if (side === "right") {
+    const mappings: Array<[number, Record<string, number>]> = [
+      [
+        buttonMask,
+        {
+          "joycon_right.y": 0x01,
+          "joycon_right.x": 0x02,
+          "joycon_right.b": 0x04,
+          "joycon_right.a": 0x08,
+          "joycon_right.sr": 0x10,
+          "joycon_right.sl": 0x20,
+          "joycon_right.r": 0x40,
+          "joycon_right.zr": 0x80,
+        },
+      ],
+      [
+        extraButtons,
+        {
+          "joycon_right.plus": 0x01,
+          "joycon_right.stick_press": 0x04,
+          "joycon_right.home": 0x20,
+        },
+      ],
+    ];
+    setActiveControls(
+      mappings.flatMap(([bits, controls]) =>
+        Object.entries(controls)
+          .filter(([, mask]) => bits & mask)
+          .map(([target]) => target),
+      ),
+      side,
+    );
+    buttonsReadout.value = `R compact 0x3F · buttons 0x${hex(buttonMask)} · extra 0x${hex(extraButtons)}`;
+    return;
+  }
   const mappings: Array<[number, Record<string, number>]> = [
     [
       buttonMask,
@@ -431,6 +510,50 @@ function applyReport(report: InputReport, controller: Controller) {
     side,
   );
   buttonsReadout.value = `D-pad 0x${hex(buttonMask)} · stick HAT ${hat === 8 ? "neutral" : hat} · extra 0x${hex(extraButtons)}`;
+}
+function maybeSwitchWindow(stick: Stick | null) {
+  if (activePage.value !== "mappings" || !windowSwitchEnabled.value || !stick)
+    return;
+  if (Math.abs(stick.normalized_x) < 0.35) {
+    windowSwitchArmed = true;
+    return;
+  }
+  if (
+    !windowSwitchArmed ||
+    Math.abs(stick.normalized_x) < 0.85 ||
+    performance.now() - lastWindowSwitchAt < 420
+  )
+    return;
+  windowSwitchArmed = false;
+  lastWindowSwitchAt = performance.now();
+  const direction = stick.normalized_x > 0 ? "next" : "previous";
+  mappingFeedback.value = "Sending macOS window shortcut…";
+  void invoke("switch_window", { direction })
+    .then(() => {
+      mappingFeedback.value =
+        direction === "next" ? "Sent Cmd+Tab." : "Sent Cmd+Shift+Tab.";
+    })
+    .catch((error) => {
+      mappingFeedback.value = `Mapping error: ${String(error)}`;
+      showError(error);
+    });
+}
+async function checkMappingAccessibility() {
+  if (!isTauriDesktop) return;
+  mappingFeedback.value = await invoke<string>("mapping_accessibility_status").catch(
+    (error) => `Could not check Accessibility: ${String(error)}`,
+  );
+}
+function testWindowSwitch() {
+  mappingFeedback.value = "Sending test Cmd+Tab…";
+  void invoke("switch_window", { direction: "next" })
+    .then(() => {
+      mappingFeedback.value = "Test sent Cmd+Tab.";
+    })
+    .catch((error) => {
+      mappingFeedback.value = `Test failed: ${String(error)}`;
+      showError(error);
+    });
 }
 function setActiveControls(next: string[], side: "left" | "right") {
   const newlyPressed = next.filter(
@@ -567,6 +690,13 @@ onMounted(async () => {
       return [];
     },
   );
+  const mappingSettings = await invoke<MappingSettings>("load_mapping_settings").catch(
+    (error) => {
+      showError(error);
+      return { window_switch_enabled: false };
+    },
+  );
+  windowSwitchEnabled.value = mappingSettings.window_switch_enabled;
   unlistenInput = await listen<StreamEvent>("joycon-input", ({ payload }) => {
     const controller = selectedControllers.value.find(
       ({ id }) => id === payload.device_id,
@@ -595,15 +725,44 @@ onBeforeUnmount(() => {
   <main class="app-shell">
     <header class="app-header">
       <div>
-        <p class="eyebrow">READ-ONLY HID INSPECTOR</p>
+        <p class="eyebrow">HID INSPECTOR · MAPPING LAB</p>
         <h1 class="app-title">VibeCon</h1>
-        <p class="subtitle">See the Joy-Con before assigning it an action.</p>
+        <p class="subtitle">Inspect input first, then enable one deliberate action.</p>
       </div>
       <button class="app-button" @click="refreshControllers">
         Refresh controllers
       </button>
     </header>
-    <section class="panel">
+    <nav class="app-tabs" aria-label="Application pages">
+      <button
+        class="app-button tab"
+        :class="{ selected: activePage === 'debug' }"
+        @click="activePage = 'debug'"
+      >
+        Debug</button
+      ><button
+        class="app-button tab"
+        :class="{ selected: activePage === 'mappings' }"
+        @click="activePage = 'mappings'"
+      >
+        Mappings
+      </button>
+    </nav>
+    <section v-if="activePage === 'mappings'" class="panel mapping-panel">
+      <h2 class="section-title">Window switching</h2>
+      <p class="hint">
+        Move the left stick firmly left or right to switch macOS windows.
+      </p>
+      <label class="mapping-toggle"
+        ><input v-model="windowSwitchEnabled" type="checkbox" /> Enable Cmd+Tab
+        mapping</label
+      >
+      <button class="app-button mapping-test" @click="testWindowSwitch">
+        Test Cmd+Tab now
+      </button>
+      <p class="mapping-feedback">{{ mappingFeedback }}</p>
+    </section>
+    <section v-show="activePage === 'debug'" class="panel">
       <div class="section-heading">
         <h2 class="section-title">Paired controllers</h2>
         <span class="status" :class="statusKind">{{ status }}</span>
@@ -641,7 +800,7 @@ onBeforeUnmount(() => {
         >
       </div>
     </section>
-    <section class="visualizer panel">
+    <section v-show="activePage === 'debug'" class="visualizer panel">
       <div class="section-heading">
         <div>
           <h2 class="section-title">Live Joy-Con</h2>
@@ -672,7 +831,7 @@ onBeforeUnmount(() => {
         />
       </div>
     </section>
-    <section class="panel transcript-panel">
+    <section v-show="activePage === 'debug'" class="panel transcript-panel">
       <div class="section-heading log-heading">
         <div>
           <h2 class="section-title">Raw input reports</h2>

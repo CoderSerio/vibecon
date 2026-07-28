@@ -342,6 +342,41 @@ p {
   border-color: #d7fff3;
   background: #7de6c4;
 }
+.app-tabs {
+  display: flex;
+  gap: 8px;
+  margin-top: 20px;
+}
+.tab.selected {
+  border-color: #7de6c4;
+  background: #254d44;
+}
+.mapping-panel {
+  display: grid;
+  gap: 14px;
+  max-width: 620px;
+}
+.mapping-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: fit-content;
+  color: #dcfff6;
+  cursor: pointer;
+}
+.mapping-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: #7de6c4;
+}
+.mapping-feedback {
+  margin: 0;
+  color: #9faeac;
+  font-size: 13px;
+}
+.mapping-test {
+  width: fit-content;
+}
 .transcript-panel {
   margin-top: 14px;
 }
