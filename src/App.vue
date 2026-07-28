@@ -54,6 +54,7 @@ const sampleRate = ref("key");
 const leftStick = ref<Stick | null>(null);
 const rightStick = ref<Stick | null>(null);
 const activeControls = ref<string[]>([]);
+const recentControls = ref<string[]>([]);
 const buttonsReadout = ref("D-pad 00 · waiting for input");
 const dialog = ref<HTMLDialogElement>();
 const selectedLog = ref<LogEntry>();
@@ -67,6 +68,7 @@ let unlistenError: UnlistenFn | undefined;
 let lastPresentedAt = 0;
 let lastKeyOperation: string | undefined;
 let lastIncomingReport: InputReport | undefined;
+let recentControlsTimer: ReturnType<typeof setTimeout> | undefined;
 
 const stickTargets = [
   "center",
@@ -103,12 +105,16 @@ const buttonNames: Record<string, string> = {
 };
 
 const nubTransform = computed(() => {
-  const stick = leftStick.value;
+  return stickTransform(leftStick.value);
+});
+const rightNubTransform = computed(() => stickTransform(rightStick.value));
+
+function stickTransform(stick: Stick | null) {
   if (!stick) return "translate(0, 0)";
   const x = Math.max(-1, Math.min(1, stick.normalized_x)) * 16;
   const y = Math.max(-1, Math.min(1, stick.normalized_y)) * 16;
   return `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
-});
+}
 const selectedReportText = computed(() =>
   selectedLog.value
     ? `report 0x${hex(selectedLog.value.report.report_id)} · ${selectedLog.value.report.bytes.map(hex).join(" ")}`
@@ -135,7 +141,7 @@ function labelText(label: Label, legacy = false) {
   const text =
     label.kind === "stick"
       ? `Stick · ${label.target} · ${label.phase ?? "moved"}`
-      : `Button · ${label.target.replace("joycon_left.", "")} · ${label.phase ?? "pressed"}`;
+      : `Button · ${label.target.replace(/^joycon_(left|right)\./, "$1 · ")} · ${label.phase ?? "pressed"}`;
   return legacy ? `${text} · legacy raw` : text;
 }
 
@@ -178,6 +184,45 @@ const macOSButtonBits: Array<{ byte: 1 | 2; mask: number; target: string }> = [
   { byte: 2, mask: 0x80, target: "joycon_left.zl" },
 ];
 function macOSJoyConButtonLabels(entry: LogEntry): Label[] {
+  if (entry.report.report_id === 0x30 && entry.report.bytes.length >= 6) {
+    const nativeBits: Array<{ byte: 3 | 4 | 5; mask: number; target: string }> =
+      [
+        { byte: 3, mask: 0x01, target: "joycon_right.y" },
+        { byte: 3, mask: 0x02, target: "joycon_right.x" },
+        { byte: 3, mask: 0x04, target: "joycon_right.b" },
+        { byte: 3, mask: 0x08, target: "joycon_right.a" },
+        { byte: 3, mask: 0x10, target: "joycon_right.sr" },
+        { byte: 3, mask: 0x20, target: "joycon_right.sl" },
+        { byte: 3, mask: 0x40, target: "joycon_right.r" },
+        { byte: 3, mask: 0x80, target: "joycon_right.zr" },
+        { byte: 4, mask: 0x01, target: "joycon_left.minus" },
+        { byte: 4, mask: 0x02, target: "joycon_right.plus" },
+        { byte: 4, mask: 0x04, target: "joycon_left.stick_press" },
+        { byte: 4, mask: 0x08, target: "joycon_right.stick_press" },
+        { byte: 4, mask: 0x10, target: "joycon_right.home" },
+        { byte: 4, mask: 0x20, target: "joycon_left.capture" },
+        { byte: 5, mask: 0x01, target: "joycon_left.dpad_down" },
+        { byte: 5, mask: 0x02, target: "joycon_left.dpad_up" },
+        { byte: 5, mask: 0x04, target: "joycon_left.dpad_right" },
+        { byte: 5, mask: 0x08, target: "joycon_left.dpad_left" },
+        { byte: 5, mask: 0x10, target: "joycon_left.sr" },
+        { byte: 5, mask: 0x20, target: "joycon_left.sl" },
+        { byte: 5, mask: 0x40, target: "joycon_left.l" },
+        { byte: 5, mask: 0x80, target: "joycon_left.zl" },
+      ];
+    return nativeBits.flatMap(({ byte, mask, target }) => {
+      const current = entry.report.bytes[byte];
+      const prior =
+        entry.previous_report?.report_id === 0x30
+          ? entry.previous_report.bytes[byte]
+          : 0;
+      return current & mask
+        ? [{ kind: "button" as const, target, phase: "pressed" as const }]
+        : prior & mask
+          ? [{ kind: "button" as const, target, phase: "released" as const }]
+          : [];
+    });
+  }
   if (entry.report.report_id !== 0x3f || entry.report.bytes.length < 3)
     return [];
   return macOSButtonBits.flatMap(({ byte, mask, target }) => {
@@ -228,7 +273,7 @@ function stickBucket(stick: Stick | null) {
 function shouldLog(report: InputReport) {
   if (sampleRate.value === "all") return true;
   if (sampleRate.value === "key") {
-    const current = `${report.buttons?.join(":") ?? "none"}|${stickBucket(report.left_stick)}`;
+    const current = `${report.buttons?.join(":") ?? "none"}|${stickBucket(report.left_stick)}|${stickBucket(report.right_stick)}`;
     if (current === lastKeyOperation) return false;
     lastKeyOperation = current;
     return true;
@@ -248,6 +293,59 @@ function applyReport(report: InputReport) {
     return;
   }
   const [buttonMask, extraButtons, hat] = report.buttons;
+  if (report.report_id === 0x30) {
+    // Native Joy-Con reports are a combined layout, not the compact macOS
+    // 0x3f layout. Byte 3 belongs to R, byte 5 belongs to L, and byte 4
+    // contains their shared system buttons.
+    const mappings: Array<[number, Record<string, number>]> = [
+      [
+        buttonMask,
+        {
+          "joycon_right.y": 0x01,
+          "joycon_right.x": 0x02,
+          "joycon_right.b": 0x04,
+          "joycon_right.a": 0x08,
+          "joycon_right.sr": 0x10,
+          "joycon_right.sl": 0x20,
+          "joycon_right.r": 0x40,
+          "joycon_right.zr": 0x80,
+        },
+      ],
+      [
+        extraButtons,
+        {
+          "joycon_left.minus": 0x01,
+          "joycon_right.plus": 0x02,
+          "joycon_left.stick_press": 0x04,
+          "joycon_right.stick_press": 0x08,
+          "joycon_right.home": 0x10,
+          "joycon_left.capture": 0x20,
+        },
+      ],
+      [
+        hat,
+        {
+          "joycon_left.dpad_down": 0x01,
+          "joycon_left.dpad_up": 0x02,
+          "joycon_left.dpad_right": 0x04,
+          "joycon_left.dpad_left": 0x08,
+          "joycon_left.sr": 0x10,
+          "joycon_left.sl": 0x20,
+          "joycon_left.l": 0x40,
+          "joycon_left.zl": 0x80,
+        },
+      ],
+    ];
+    setActiveControls(
+      mappings.flatMap(([bits, controls]) =>
+        Object.entries(controls)
+          .filter(([, mask]) => bits & mask)
+          .map(([target]) => target),
+      ),
+    );
+    buttonsReadout.value = `Native 0x30 · R 0x${hex(buttonMask)} · shared 0x${hex(extraButtons)} · L 0x${hex(hat)}`;
+    return;
+  }
   const mappings: Array<[number, Record<string, number>]> = [
     [
       buttonMask,
@@ -271,12 +369,29 @@ function applyReport(report: InputReport) {
       },
     ],
   ];
-  activeControls.value = mappings.flatMap(([bits, controls]) =>
-    Object.entries(controls)
-      .filter(([, mask]) => bits & mask)
-      .map(([target]) => target),
+  setActiveControls(
+    mappings.flatMap(([bits, controls]) =>
+      Object.entries(controls)
+        .filter(([, mask]) => bits & mask)
+        .map(([target]) => target),
+    ),
   );
   buttonsReadout.value = `D-pad 0x${hex(buttonMask)} · stick HAT ${hat === 8 ? "neutral" : hat} · extra 0x${hex(extraButtons)}`;
+}
+function setActiveControls(next: string[]) {
+  const newlyPressed = next.filter(
+    (target) => !activeControls.value.includes(target),
+  );
+  activeControls.value = next;
+  if (!newlyPressed.length) return;
+  recentControls.value = [
+    ...new Set([...recentControls.value, ...newlyPressed]),
+  ];
+  if (recentControlsTimer) clearTimeout(recentControlsTimer);
+  recentControlsTimer = setTimeout(() => {
+    recentControls.value = [];
+    recentControlsTimer = undefined;
+  }, 220);
 }
 function showError(error: unknown) {
   status.value = String(error);
@@ -284,6 +399,12 @@ function showError(error: unknown) {
 }
 function clearLog() {
   logs.value = [];
+}
+function appendLog(report: InputReport, previous_report?: InputReport) {
+  logs.value = [
+    { timestamp: new Date(), previous_report, report },
+    ...logs.value,
+  ].slice(0, 160);
 }
 function selectController(controller: Controller) {
   selectedController.value = controller;
@@ -381,13 +502,7 @@ onMounted(async () => {
     applyReport(payload.report);
     const previous = lastIncomingReport;
     lastIncomingReport = payload.report;
-    if (shouldLog(payload.report))
-      logs.value.unshift({
-        timestamp: new Date(),
-        previous_report: previous,
-        report: payload.report,
-      });
-    if (logs.value.length > 160) logs.value.length = 160;
+    if (shouldLog(payload.report)) appendLog(payload.report, previous);
   });
   unlistenError = await listen<string>("joycon-stream-error", ({ payload }) =>
     showError(payload),
@@ -397,6 +512,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   unlistenInput?.();
   unlistenError?.();
+  if (recentControlsTimer) clearTimeout(recentControlsTimer);
   if (isTauriDesktop) void invoke("stop_joycon_stream");
 });
 </script>
@@ -455,6 +571,7 @@ onBeforeUnmount(() => {
       <div class="joycon-stage">
         <JoyCon
           :active-controls="activeControls"
+          :recent-controls="recentControls"
           :nub-transform="nubTransform"
         />
         <div class="axis-readout">
@@ -463,6 +580,12 @@ onBeforeUnmount(() => {
           ><span class="readout-label">Secondary axes</span
           ><output class="axis-output">{{ renderStick(rightStick) }}</output>
         </div>
+        <JoyCon
+          side="right"
+          :active-controls="activeControls"
+          :recent-controls="recentControls"
+          :nub-transform="rightNubTransform"
+        />
       </div>
     </section>
     <section class="panel transcript-panel">

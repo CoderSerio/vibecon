@@ -87,6 +87,13 @@ p {
     inset 0 1px #fff;
   transform: scale(0.91);
 }
+.control.recent:not(.active) {
+  border-color: #ffd1c9;
+  box-shadow:
+    0 0 0 3px rgba(255, 111, 94, 0.24),
+    0 0 16px rgba(255, 111, 94, 0.55),
+    inset 0 1px rgba(255, 255, 255, 0.3);
+}
 .stick.active {
   border-color: #d7fff3;
   box-shadow:
@@ -95,7 +102,7 @@ p {
     inset 0 5px 9px rgba(0, 35, 62, 0.65);
 }
 .shoulder {
-    z-index: 0;
+  z-index: 0;
   top: -24px;
   /* left: 1px; */
   right: 64px;
@@ -213,6 +220,104 @@ p {
   height: 29px;
   border-radius: 7px;
   font-size: 15px;
+}
+
+/* Right Joy-Con: a mirrored shell, with its physical ABXY/stick arrangement. */
+.joycon.right::before {
+  background: #ff3c28;
+  border-radius: 0 50px 58px 0 / 0 72px 78px 0;
+  box-shadow:
+    inset -10px 0 15px rgba(255, 255, 255, 0.18),
+    inset 10px 0 14px rgba(80, 12, 0, 0.28);
+}
+.joycon.right .rail {
+  right: auto;
+  left: 0;
+  box-shadow:
+    inset -2px 0 rgba(255, 255, 255, 0.07),
+    2px 0 4px rgba(48, 8, 0, 0.3);
+}
+.r {
+  z-index: 1;
+  top: -6px;
+  right: -4px;
+  left: auto;
+  width: 150px;
+  height: 64px;
+  border-radius: 12px 84px 84px 12px / 20px 84px 8px 32px;
+  font-size: 9px;
+}
+.r-shoulder {
+  z-index: 0;
+  top: -24px;
+  right: auto;
+  left: 64px;
+  width: 80px;
+  height: 23px;
+  border-radius: 80px 80px 0 0 / 40px 40px 0 0;
+  font-size: 9px;
+}
+.joycon.right .small {
+  right: auto;
+  left: 0;
+  color: #35110d;
+  background: #ff3c28;
+  writing-mode: vertical-lr;
+}
+.r-sl {
+  top: 314px;
+}
+.r-sr {
+  top: 96px;
+}
+.plus {
+  top: 69px;
+  left: 35px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 17px;
+}
+.abxy {
+  position: absolute;
+  z-index: 3;
+  top: 124px;
+  right: 36px;
+  width: 112px;
+  height: 112px;
+}
+.abxy-button {
+  width: 39px;
+  height: 39px;
+  border-radius: 50%;
+  font-size: 12px;
+}
+.abxy-button.y {
+  top: 37px;
+  left: 0;
+}
+.abxy-button.a {
+  top: 37px;
+  right: 0;
+}
+.abxy-button.b {
+  bottom: 0;
+  left: 37px;
+}
+.abxy-button.x {
+  top: 0;
+  left: 37px;
+}
+.joycon.right .stick {
+  top: 252px;
+}
+.home {
+  bottom: 37px;
+  left: 31px;
+  width: 29px;
+  height: 29px;
+  border-radius: 50%;
+  font-size: 14px;
 }
 .transcript-panel {
   margin-top: 14px;
