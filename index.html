@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VibeCon — Controller Debug Lab</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">READ-ONLY HID INSPECTOR</p>
+          <h1>VibeCon</h1>
+          <p class="subtitle">See the Joy-Con before assigning it an action.</p>
+        </div>
+        <button id="refresh">Refresh controllers</button>
+      </header>
+
+      <section class="panel">
+        <div class="section-heading">
+          <h2>Paired controllers</h2>
+          <span id="connection-status" class="status">Looking for Nintendo HID devices…</span>
+        </div>
+        <div id="controllers" class="controllers"></div>
+      </section>
+
+      <section class="dashboard">
+        <article class="panel axis-card">
+          <h2>Left stick</h2>
+          <output id="left-stick">Waiting for a standard 0x30 report</output>
+        </article>
+        <article class="panel axis-card">
+          <h2>Right stick</h2>
+          <output id="right-stick">Waiting for a standard 0x30 report</output>
+        </article>
+        <article class="panel axis-card">
+          <h2>Buttons</h2>
+          <output id="buttons">—</output>
+        </article>
+      </section>
+
+      <section class="panel transcript-panel">
+        <div class="section-heading">
+          <h2>Raw input reports</h2>
+          <span>Latest 80 reports</span>
+        </div>
+        <pre id="transcript">Choose a Joy-Con, then move a stick or press a button.</pre>
+      </section>
+    </main>
+  </body>
+</html>

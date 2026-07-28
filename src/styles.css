@@ -1,0 +1,19 @@
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #ecf0f1; background: #101414; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 620px; min-height: 100vh; background: radial-gradient(circle at 82% -10%, #254a43, transparent 38%), #101414; }
+main { max-width: 980px; margin: auto; padding: 44px 32px; }
+header, .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+h1, h2, p { margin: 0; }
+h1 { font-size: 40px; letter-spacing: -1.6px; }
+h2 { font-size: 16px; }
+.eyebrow { color: #7de6c4; font-size: 11px; font-weight: 800; letter-spacing: 1.5px; margin-bottom: 5px; }
+.subtitle { color: #9faeac; margin-top: 6px; }
+button { border: 1px solid #407067; border-radius: 9px; color: #e9fffa; background: #1b332e; padding: 10px 14px; font: inherit; cursor: pointer; }
+button:hover, button.selected { border-color: #7de6c4; background: #254d44; }
+.panel { background: rgba(25, 34, 33, .88); border: 1px solid #2e4541; border-radius: 12px; padding: 18px; box-shadow: 0 14px 30px rgba(0, 0, 0, .18); }
+section.panel { margin-top: 28px; }
+.status { color: #9faeac; font-size: 13px; text-align: right; }.status.connected { color: #7de6c4; }.status.error { color: #ff9c96; }
+.controllers { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; color: #9faeac; font-size: 14px; }
+.controller { min-width: 220px; text-align: left; display: grid; gap: 4px; }.controller span { color: #a5b7b3; font-size: 12px; }
+.dashboard { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 14px; }.axis-card output { white-space: pre-line; display: block; margin-top: 14px; color: #7de6c4; font: 600 15px ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.5; }
+.transcript-panel { margin-top: 14px; }.section-heading span { color: #9faeac; font-size: 12px; } pre { min-height: 220px; max-height: 350px; overflow: auto; margin: 16px 0 0; padding: 14px; border-radius: 8px; background: #0d1110; color: #a9d9cc; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
