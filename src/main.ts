@@ -88,7 +88,7 @@ function renderReport(report: InputReport) {
 }
 function updateStickNub(stick: Stick | null) {
   if (!stick) return;
-  stickNub.style.transform = `translate(${(Math.max(-1, Math.min(1, stick.normalized_x)) * 27).toFixed(1)}px, ${(Math.max(-1, Math.min(1, stick.normalized_y)) * 27).toFixed(1)}px)`;
+  stickNub.style.transform = `translate(${(Math.max(-1, Math.min(1, stick.normalized_x)) * 16).toFixed(1)}px, ${(Math.max(-1, Math.min(1, stick.normalized_y)) * 16).toFixed(1)}px)`;
 }
 function updateButtons(report: InputReport) {
   document.querySelectorAll<HTMLElement>("[data-control]").forEach((control) => control.classList.remove("active"));
