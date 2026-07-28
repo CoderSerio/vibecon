@@ -113,17 +113,18 @@ fn decode_standard_report(bytes: &[u8]) -> (Option<Stick>, Option<Stick>, Option
         };
         // The macOS Joy-Con (L) descriptor exposes its physical stick as a
         // discrete eight-way HAT in byte 3; the four 16-bit generic axes stay
-        // centred. Use the HAT to animate the primary stick instead.
+        // centred. VibeCon renders the Joy-Con vertically, so rotate the
+        // horizontal-grip coordinate space 90 degrees clockwise.
         let stick_from_hat = |hat: u8| {
             let (normalized_x, normalized_y) = match hat {
-                0 => (0.0, -1.0),
-                1 => (0.707, -0.707),
-                2 => (1.0, 0.0),
-                3 => (0.707, 0.707),
-                4 => (0.0, 1.0),
-                5 => (-0.707, 0.707),
-                6 => (-1.0, 0.0),
-                7 => (-0.707, -0.707),
+                0 => (1.0, 0.0),
+                1 => (0.707, 0.707),
+                2 => (0.0, 1.0),
+                3 => (-0.707, 0.707),
+                4 => (-1.0, 0.0),
+                5 => (-0.707, -0.707),
+                6 => (0.0, -1.0),
+                7 => (0.707, -0.707),
                 _ => (0.0, 0.0), // 8 is neutral.
             };
             Stick {
