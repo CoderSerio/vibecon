@@ -36,6 +36,15 @@ The raw report remains visible even when a controller uses an unexpected report
 mode. That is intentional: we should map controls from observed input, rather
 than guessing a device layout.
 
+### Observed macOS Joy-Con (L) HAT profile
+
+On the current macOS Bluetooth HID path, `0x3f` report byte 3 is a complete
+eight-way stick HAT: values `0` through `7` are the eight outer directions and
+`8` is neutral. VibeCon includes this portrait-orientation mapping as a built-in
+profile, so these reports do not need manual per-direction labels.
+
+![VibeCon showing the observed 0-8 HAT values in raw Joy-Con reports](./docs/images/macos-joycon-hat-debug.png)
+
 ## Quick start — macOS
 
 ### 1. Pair a Joy-Con

@@ -26,6 +26,12 @@ VibeCon 的第一步很小，但刻意保持克制：先做一个原生桌面调
 
 即使设备使用了意料之外的报文模式，界面也会保留原始字节。这是有意为之：控制器映射必须基于我们真实观察到的输入，而不是先猜一套按键布局。
 
+### 已观测到的 macOS Joy-Con (L) HAT profile
+
+当前 macOS 蓝牙 HID 路径中，`0x3f` report 的第 4 个字节是完整的八向摇杆 HAT：`0–7` 对应八个外圈方向，`8` 表示中立。VibeCon 已内置这套竖握映射，因此这些方向不需要逐个手工打标。
+
+![VibeCon 中观测到的 0-8 HAT 原始 Joy-Con report](./docs/images/macos-joycon-hat-debug.png)
+
 ## macOS 快速开始
 
 ### 1. 配对 Joy-Con
