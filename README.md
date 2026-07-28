@@ -23,6 +23,20 @@
 
 > **Early prototype.** Built and tested on macOS; the Tauri + Rust architecture is intentionally portable, but Windows input and window-switching have not yet been validated.
 
+## Install the macOS preview
+
+1. Download the `.dmg` for your Apple Silicon Mac from [GitHub Releases](https://github.com/CoderSerio/vibecon/releases).
+2. Open it and drag `VibeCon.app` to **Applications**.
+3. This preview is ad-hoc signed but is **not Apple-notarized** yet. macOS may show an "Apple cannot verify" warning. Run the following once in Terminal after moving the app to Applications:
+
+   ```sh
+   xattr -dr com.apple.quarantine "/Applications/VibeCon.app"
+   ```
+
+4. Open `VibeCon` from Applications, then grant Accessibility only when you enable the experimental window-switch mapping.
+
+Only run this command for a release downloaded from this repository. Developer ID signing and Apple notarization are planned for a future public release.
+
 ## What is it?
 
 VibeCon starts from a simple idea: a Joy-Con—or another controller you already own—can be a better physical control surface for AI-assisted coding than an expensive, opaque keyboard.

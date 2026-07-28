@@ -23,6 +23,20 @@
 
 > **早期原型。** 目前在 macOS 上开发、验证；Tauri + Rust 的结构为跨平台而设计，但 Windows 输入与窗口切换尚未实机验证。
 
+## 安装 macOS 预览版
+
+1. 从 [GitHub Releases](https://github.com/CoderSerio/vibecon/releases) 下载适用于 Apple Silicon Mac 的 `.dmg`。
+2. 打开镜像，把 `VibeCon.app` 拖入「应用程序」。
+3. 当前预览版使用 ad-hoc 签名，但**还没有 Apple 公证**。macOS 可能提示「Apple 无法验证」。拖入应用程序后，在 Terminal 执行一次：
+
+   ```sh
+   xattr -dr com.apple.quarantine "/Applications/VibeCon.app"
+   ```
+
+4. 从「应用程序」打开 `VibeCon`。只有启用实验性的窗口切换映射时，才需要再授予辅助功能权限。
+
+这条命令只应对从本仓库下载的 Release 使用。Developer ID 签名与 Apple Notarization 会在之后的公开版本中补上。
+
 ## 它是什么？
 
 VibeCon 从一个很朴素的想法开始：与其买一个昂贵又封闭的「Vibe Coding 键盘」，不如把已有的 Joy-Con 或其他手柄，变成一块真正可理解、可检查的物理控制面板。
