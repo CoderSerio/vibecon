@@ -2,100 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>VibeCon — Controller Debug Lab</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>
-    <main>
-      <header>
-        <div>
-          <p class="eyebrow">READ-ONLY HID INSPECTOR</p>
-          <h1>VibeCon</h1>
-          <p class="subtitle">See the Joy-Con before assigning it an action.</p>
-        </div>
-        <button id="refresh">Refresh controllers</button>
-      </header>
-
-      <section class="panel">
-        <div class="section-heading">
-          <h2>Paired controllers</h2>
-          <span id="connection-status" class="status">Looking for Nintendo HID devices…</span>
-        </div>
-        <div id="controllers" class="controllers"></div>
-      </section>
-
-      <section class="visualizer panel">
-        <div class="section-heading">
-          <div>
-            <h2>Live Joy-Con</h2>
-            <p class="hint">Original CSS visualizer. Blue controls are detected; dim controls still need a confirmed bit mapping.</p>
-          </div>
-          <output id="buttons" class="raw-buttons">D-pad 00 · waiting for input</output>
-        </div>
-
-        <div class="joycon-stage">
-          <div class="joycon left" aria-label="Live Joy-Con (L) visualizer">
-            <div class="rail"></div>
-            <span class="control l" data-control="l">L</span>
-            <button class="control shoulder" data-control="zl">ZL</button>
-            <button class="control small sl" data-control="sl">SL</button>
-            <button class="control small sr" data-control="sr">SR</button>
-            <button class="control minus" data-control="minus">−</button>
-
-            <div class="stick" data-control="stick_press" aria-label="Left analogue stick"><div id="stick-nub" class="stick-nub"></div></div>
-
-            <div class="dpad" aria-label="Direction buttons">
-              <button class="control dpad-button up" data-control="up">▲</button>
-              <button class="control dpad-button right" data-control="right">▶</button>
-              <button class="control dpad-button down" data-control="down">▼</button>
-              <button class="control dpad-button left" data-control="left">◀</button>
-            </div>
-            <button class="control capture" data-control="capture">●</button>
-          </div>
-
-          <div class="axis-readout">
-            <span class="readout-label">Primary stick (macOS HAT)</span>
-            <output id="left-stick">Waiting for report</output>
-            <span class="readout-label">Secondary axes</span>
-            <output id="right-stick">Waiting for report</output>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel transcript-panel">
-        <div class="section-heading log-heading">
-          <div>
-            <h2>Raw input reports</h2>
-            <p class="hint">Click any report to label it. Clearing the view never deletes saved labels.</p>
-          </div>
-          <div class="log-actions">
-            <label>Log policy
-              <select id="sample-rate">
-                <option value="key" selected>Key operations</option>
-                <option value="75">75 ms snapshots (original)</option>
-                <option value="60">60 Hz</option>
-                <option value="30">30 Hz</option>
-                <option value="10">10 Hz</option>
-                <option value="all">All reports</option>
-              </select>
-            </label>
-            <button id="clear-log" class="secondary">Clear</button>
-          </div>
-        </div>
-        <div id="transcript" class="transcript">Choose a Joy-Con, then move a stick or press a button.</div>
-      </section>
-    </main>
-    <dialog id="annotation-modal" class="annotation-modal">
-      <form method="dialog" class="modal-card">
-        <header><div><p class="eyebrow">ANNOTATE SAMPLE</p><h2>Give this report a meaning</h2></div><button class="secondary" value="cancel">Close</button></header>
-        <p id="selected-report" class="selected-report"></p>
-        <div class="annotation-kinds"><button type="button" data-kind="stick" class="kind active">Stick operation</button><button type="button" data-kind="button" class="kind">Button operation</button></div>
-        <div id="annotation-picker"></div>
-        <p id="annotation-choice" class="annotation-choice">Choose a fixed target.</p>
-        <footer><button id="save-annotation" type="button" disabled>Save annotation</button></footer>
-      </form>
-    </dialog>
+    <div id="app"></div>
   </body>
 </html>
