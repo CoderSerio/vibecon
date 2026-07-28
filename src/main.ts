@@ -40,15 +40,23 @@ const isTauriDesktop = "__TAURI_INTERNALS__" in window;
 function hex(byte: number) { return byte.toString(16).padStart(2, "0").toUpperCase(); }
 function fingerprint(report: { report_id: number; bytes: number[] }) { return `${report.report_id}:${report.bytes.map(hex).join("")}`; }
 function labelText(label: Annotation["label"], legacy = false) { const text = label.kind === "stick" ? `Stick · ${label.target} · ${label.phase ?? "moved"}` : `Button · ${label.target.replace("joycon_left.", "")} · ${label.phase ?? "pressed"}`; return legacy ? `${text} · legacy raw` : text; }
-function macOSJoyConHatLabel(report: InputReport): Annotation["label"] | undefined {
+function macOSJoyConHatLabel(entry: LogEntry): Annotation["label"] | undefined {
   // macOS's generic 0x3f Joy-Con (L) report: byte 1 is the physical D-pad,
   // byte 3 is an eight-way stick HAT. Only apply this profile when the D-pad
   // and extra button byte are neutral, so button events remain labelable.
+  const { report } = entry;
   if (report.report_id !== 0x3f || report.bytes.length < 4 || report.bytes[1] !== 0 || report.bytes[2] !== 0) return undefined;
   const targets = ["outer-e", "outer-se", "outer-s", "outer-sw", "outer-w", "outer-nw", "outer-n", "outer-ne", "center"];
   const hat = report.bytes[3];
   if (hat > 8) return undefined;
-  return { kind: "stick", target: targets[hat], phase: hat === 8 ? "reset" : "moved" };
+  if (hat < 8) return { kind: "stick", target: targets[hat], phase: "moved" };
+  // `08` is global neutral, not inherently a stick reset. Only infer reset
+  // when the immediately preceding report was a neutral-button HAT direction.
+  const previous = entry.previous_report;
+  if (previous?.report_id === 0x3f && previous.bytes.length >= 4 && previous.bytes[1] === 0 && previous.bytes[2] === 0 && previous.bytes[3] < 8) {
+    return { kind: "stick", target: "center", phase: "reset" };
+  }
+  return undefined;
 }
 function renderStick(stick: Stick | null) { return stick ? `x ${stick.normalized_x.toFixed(3)}\ny ${stick.normalized_y.toFixed(3)}\nraw ${stick.x}, ${stick.y}` : "No decoded value"; }
 
@@ -114,7 +122,7 @@ function renderLogs() {
     row.type = "button";
     row.className = "log-row";
     const key = fingerprint(entry.report);
-    const builtIn = macOSJoyConHatLabel(entry.report);
+    const builtIn = macOSJoyConHatLabel(entry);
     const matches = annotations.filter((annotation) => annotation.previous_report ? Boolean(entry.previous_report) && fingerprint(annotation.previous_report) === fingerprint(entry.previous_report!) && fingerprint(annotation.report) === key : fingerprint(annotation.report) === key);
     const match = matches[matches.length - 1];
     const tag = builtIn ? `<span class="annotation-tag built-in">${labelText(builtIn)}</span>` : match ? `<span class="annotation-tag${match.previous_report ? "" : " legacy"}">${labelText(match.label, !match.previous_report)}</span>` : "<span class=\"label-prompt\">Label</span>";
