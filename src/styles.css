@@ -319,6 +319,29 @@ p {
   border-radius: 50%;
   font-size: 14px;
 }
+.controller {
+  position: relative;
+}
+.controller-check {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border: 1px solid #628b82;
+  border-radius: 5px;
+  color: #102e28;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+}
+.selected-controller .controller-check {
+  border-color: #d7fff3;
+  background: #7de6c4;
+}
 .transcript-panel {
   margin-top: 14px;
 }
@@ -407,11 +430,31 @@ select {
   outline: 1px solid #3b776b;
 }
 .log-row code {
-  overflow: hidden;
   color: inherit;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font: inherit;
+}
+.log-group {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+}
+.log-group > time {
+  padding: 6px 7px;
+}
+.log-lines {
+  min-width: 0;
+}
+.log-lines .log-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.log-row b {
+  display: inline-block;
+  width: 12px;
+  color: #7de6c4;
 }
 .annotation-tags {
   display: flex;
@@ -448,7 +491,7 @@ select {
   opacity: 1;
 }
 .annotation-modal {
-  width: min(590px, calc(100vw - 30px));
+  width: min(720px, calc(100vw - 30px));
   padding: 0;
   border: 1px solid #3e7065;
   border-radius: 14px;

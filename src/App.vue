@@ -24,6 +24,7 @@ type InputReport = {
   buttons: [number, number, number] | null;
 };
 type LogEntry = {
+  device_id: string;
   timestamp: Date;
   previous_report?: InputReport;
   report: InputReport;
@@ -45,7 +46,7 @@ type StreamEvent = { device_id: string; report: InputReport };
 
 const isTauriDesktop = "__TAURI_INTERNALS__" in window;
 const controllers = ref<Controller[]>([]);
-const selectedController = ref<Controller>();
+const selectedControllers = ref<Controller[]>([]);
 const status = ref("Looking for Nintendo HID devices…");
 const statusKind = ref<"" | "connected" | "error">("");
 const logs = ref<LogEntry[]>([]);
@@ -53,7 +54,14 @@ const annotations = ref<Annotation[]>([]);
 const sampleRate = ref("key");
 const leftStick = ref<Stick | null>(null);
 const rightStick = ref<Stick | null>(null);
-const activeControls = ref<string[]>([]);
+const activeControlsBySide = ref({
+  left: [] as string[],
+  right: [] as string[],
+});
+const activeControls = computed(() => [
+  ...activeControlsBySide.value.left,
+  ...activeControlsBySide.value.right,
+]);
 const recentControls = ref<string[]>([]);
 const buttonsReadout = ref("D-pad 00 · waiting for input");
 const dialog = ref<HTMLDialogElement>();
@@ -65,9 +73,9 @@ const stickPhase = ref<"moved" | "reset">("moved");
 const previewTarget = ref<string>();
 let unlistenInput: UnlistenFn | undefined;
 let unlistenError: UnlistenFn | undefined;
-let lastPresentedAt = 0;
-let lastKeyOperation: string | undefined;
-let lastIncomingReport: InputReport | undefined;
+const lastPresentedAt = new Map<string, number>();
+const lastKeyOperation = new Map<string, string>();
+const lastIncomingReport = new Map<string, InputReport>();
 let recentControlsTimer: ReturnType<typeof setTimeout> | undefined;
 
 const stickTargets = [
@@ -107,12 +115,15 @@ const buttonNames: Record<string, string> = {
 const nubTransform = computed(() => {
   return stickTransform(leftStick.value);
 });
-const rightNubTransform = computed(() => stickTransform(rightStick.value));
+const rightNubTransform = computed(() =>
+  stickTransform(rightStick.value, true),
+);
 
-function stickTransform(stick: Stick | null) {
+function stickTransform(stick: Stick | null, invertY = false) {
   if (!stick) return "translate(0, 0)";
   const x = Math.max(-1, Math.min(1, stick.normalized_x)) * 16;
-  const y = Math.max(-1, Math.min(1, stick.normalized_y)) * 16;
+  const y =
+    Math.max(-1, Math.min(1, stick.normalized_y)) * (invertY ? -16 : 16);
   return `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
 }
 const selectedReportText = computed(() =>
@@ -125,12 +136,49 @@ const annotationChoice = computed(() =>
     ? "Choose a fixed target."
     : `Selected: ${annotationKind.value === "stick" ? `${annotationTarget.value} · ${stickPhase.value}` : `${buttonNames[annotationTarget.value]} · ${buttonPhase.value}`}`,
 );
+const groupedLogs = computed(() => {
+  const groups: Array<{ timestamp: Date; entries: LogEntry[] }> = [];
+  for (const entry of logs.value) {
+    const group = groups.at(-1);
+    if (
+      group &&
+      Math.abs(group.timestamp.getTime() - entry.timestamp.getTime()) <= 24 &&
+      !group.entries.some(({ device_id }) => device_id === entry.device_id)
+    ) {
+      group.entries.push(entry);
+    } else {
+      groups.push({ timestamp: entry.timestamp, entries: [entry] });
+    }
+  }
+  for (const group of groups) {
+    group.entries.sort((a, b) => {
+      const product = (id: string) =>
+        controllers.value.find((controller) => controller.id === id)
+          ?.product_id;
+      return (
+        (product(a.device_id) === 0x2006 ? 0 : 1) -
+        (product(b.device_id) === 0x2006 ? 0 : 1)
+      );
+    });
+  }
+  return groups;
+});
 
 function hex(byte: number) {
   return byte.toString(16).padStart(2, "0").toUpperCase();
 }
 function fingerprint(report: { report_id: number; bytes: number[] }) {
   return `${report.report_id}:${report.bytes.map(hex).join("")}`;
+}
+function formatReport(report: InputReport) {
+  const chunks = report.bytes
+    .map(hex)
+    .reduce<string[]>((lines, byte, index) => {
+    const line = Math.floor(index / 26);
+      lines[line] = `${lines[line] ? `${lines[line]} ` : ""}${byte}`;
+      return lines;
+    }, []);
+  return `report 0x${hex(report.report_id)} ${chunks.join("\n              ")}`;
 }
 function renderStick(stick: Stick | null) {
   return stick
@@ -270,25 +318,27 @@ function stickBucket(stick: Stick | null) {
   const sectors = ["e", "se", "s", "sw", "w", "nw", "n", "ne"];
   return `${ring}-${sectors[(Math.round(Math.atan2(y, x) / (Math.PI / 4)) + 8) % 8]}`;
 }
-function shouldLog(report: InputReport) {
+function shouldLog(report: InputReport, deviceId: string) {
   if (sampleRate.value === "all") return true;
   if (sampleRate.value === "key") {
     const current = `${report.buttons?.join(":") ?? "none"}|${stickBucket(report.left_stick)}|${stickBucket(report.right_stick)}`;
-    if (current === lastKeyOperation) return false;
-    lastKeyOperation = current;
+    if (current === lastKeyOperation.get(deviceId)) return false;
+    lastKeyOperation.set(deviceId, current);
     return true;
   }
   const interval =
     sampleRate.value === "75" ? 75 : 1000 / Number(sampleRate.value);
-  if (performance.now() - lastPresentedAt < interval) return false;
-  lastPresentedAt = performance.now();
+  if (performance.now() - (lastPresentedAt.get(deviceId) ?? 0) < interval)
+    return false;
+  lastPresentedAt.set(deviceId, performance.now());
   return true;
 }
-function applyReport(report: InputReport) {
-  leftStick.value = report.left_stick;
-  rightStick.value = report.right_stick;
+function applyReport(report: InputReport, controller: Controller) {
+  const side = controller.product_id === 0x2007 ? "right" : "left";
+  if (side === "left") leftStick.value = report.left_stick;
+  else rightStick.value = report.right_stick;
   if (!report.buttons) {
-    activeControls.value = [];
+    activeControlsBySide.value[side] = [];
     buttonsReadout.value = "No decoded button data";
     return;
   }
@@ -337,11 +387,14 @@ function applyReport(report: InputReport) {
       ],
     ];
     setActiveControls(
-      mappings.flatMap(([bits, controls]) =>
-        Object.entries(controls)
-          .filter(([, mask]) => bits & mask)
-          .map(([target]) => target),
-      ),
+      mappings
+        .flatMap(([bits, controls]) =>
+          Object.entries(controls)
+            .filter(([, mask]) => bits & mask)
+            .map(([target]) => target),
+        )
+        .filter((target) => target.startsWith(`joycon_${side}.`)),
+      side,
     );
     buttonsReadout.value = `Native 0x30 · R 0x${hex(buttonMask)} · shared 0x${hex(extraButtons)} · L 0x${hex(hat)}`;
     return;
@@ -375,14 +428,15 @@ function applyReport(report: InputReport) {
         .filter(([, mask]) => bits & mask)
         .map(([target]) => target),
     ),
+    side,
   );
   buttonsReadout.value = `D-pad 0x${hex(buttonMask)} · stick HAT ${hat === 8 ? "neutral" : hat} · extra 0x${hex(extraButtons)}`;
 }
-function setActiveControls(next: string[]) {
+function setActiveControls(next: string[], side: "left" | "right") {
   const newlyPressed = next.filter(
-    (target) => !activeControls.value.includes(target),
+    (target) => !activeControlsBySide.value[side].includes(target),
   );
-  activeControls.value = next;
+  activeControlsBySide.value[side] = next;
   if (!newlyPressed.length) return;
   recentControls.value = [
     ...new Set([...recentControls.value, ...newlyPressed]),
@@ -400,19 +454,35 @@ function showError(error: unknown) {
 function clearLog() {
   logs.value = [];
 }
-function appendLog(report: InputReport, previous_report?: InputReport) {
+function appendLog(
+  device_id: string,
+  report: InputReport,
+  previous_report?: InputReport,
+) {
   logs.value = [
-    { timestamp: new Date(), previous_report, report },
+    { timestamp: new Date(), device_id, previous_report, report },
     ...logs.value,
   ].slice(0, 160);
 }
 function selectController(controller: Controller) {
-  selectedController.value = controller;
-  lastKeyOperation = undefined;
-  lastIncomingReport = undefined;
-  status.value = `Streaming ${controller.name}. Move a stick or press a button.`;
+  const selected = selectedControllers.value.some(
+    ({ id }) => id === controller.id,
+  );
+  if (selected) {
+    selectedControllers.value = selectedControllers.value.filter(
+      ({ id }) => id !== controller.id,
+    );
+    void invoke("stop_joycon_stream", { id: controller.id });
+  } else {
+    selectedControllers.value = [...selectedControllers.value, controller];
+    void invoke("start_joycon_stream", { id: controller.id }).catch(showError);
+  }
+  lastKeyOperation.delete(controller.id);
+  lastIncomingReport.delete(controller.id);
+  status.value = selectedControllers.value.length
+    ? `Streaming ${selectedControllers.value.map(({ name }) => name).join(" + ")}. Move a stick or press a button.`
+    : "Choose one or two controllers to start streaming.";
   statusKind.value = "connected";
-  void invoke("start_joycon_stream", { id: controller.id }).catch(showError);
 }
 async function refreshControllers() {
   if (!isTauriDesktop) {
@@ -422,7 +492,8 @@ async function refreshControllers() {
   status.value = "Checking HID devices…";
   try {
     controllers.value = await invoke<Controller[]>("list_joycons");
-    if (controllers.value.length) selectController(controllers.value[0]);
+    if (!selectedControllers.value.length && controllers.value.length)
+      selectController(controllers.value[0]);
   } catch (error) {
     showError(error);
   }
@@ -445,18 +516,17 @@ function chooseTarget(target: string) {
   annotationTarget.value = target;
 }
 async function saveAnnotation() {
-  if (
-    !selectedLog.value ||
-    !selectedController.value ||
-    !annotationTarget.value
-  )
+  if (!selectedLog.value || !selectedLog.value || !annotationTarget.value)
     return;
   try {
     const annotation = await invoke<Annotation>("save_annotation", {
       draft: {
         controller: {
           vendor_id: 0x057e,
-          product_id: selectedController.value.product_id,
+          product_id:
+            controllers.value.find(
+              ({ id }) => id === selectedLog.value!.device_id,
+            )?.product_id ?? 0,
           orientation: "portrait",
         },
         previous_report: selectedLog.value.previous_report
@@ -498,11 +568,15 @@ onMounted(async () => {
     },
   );
   unlistenInput = await listen<StreamEvent>("joycon-input", ({ payload }) => {
-    if (payload.device_id !== selectedController.value?.id) return;
-    applyReport(payload.report);
-    const previous = lastIncomingReport;
-    lastIncomingReport = payload.report;
-    if (shouldLog(payload.report)) appendLog(payload.report, previous);
+    const controller = selectedControllers.value.find(
+      ({ id }) => id === payload.device_id,
+    );
+    if (!controller) return;
+    applyReport(payload.report, controller);
+    const previous = lastIncomingReport.get(payload.device_id);
+    lastIncomingReport.set(payload.device_id, payload.report);
+    if (shouldLog(payload.report, payload.device_id))
+      appendLog(payload.device_id, payload.report, previous);
   });
   unlistenError = await listen<string>("joycon-stream-error", ({ payload }) =>
     showError(payload),
@@ -541,11 +615,21 @@ onBeforeUnmount(() => {
             :key="controller.id"
             class="controller"
             :class="{
-              'selected-controller': selectedController?.id === controller.id,
+              'selected-controller': selectedControllers.some(
+                ({ id }) => id === controller.id,
+              ),
             }"
+            :aria-pressed="
+              selectedControllers.some(({ id }) => id === controller.id)
+            "
             @click="selectController(controller)"
           >
-            <strong>{{ controller.name }}</strong
+            <span class="controller-check" aria-hidden="true">{{
+              selectedControllers.some(({ id }) => id === controller.id)
+                ? "✓"
+                : ""
+            }}</span
+            ><strong>{{ controller.name }}</strong
             ><span class="controller-meta"
               >product 0x{{ controller.product_id.toString(16) }} ·
               {{ controller.transport }}</span
@@ -602,8 +686,8 @@ onBeforeUnmount(() => {
             >Log policy<select
               v-model="sampleRate"
               @change="
-                lastPresentedAt = 0;
-                lastKeyOperation = undefined;
+                lastPresentedAt.clear();
+                lastKeyOperation.clear();
               "
             >
               <option value="key">Key operations</option>
@@ -617,36 +701,51 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="transcript">
-        <template v-if="logs.length"
-          ><button
-            v-for="entry in logs"
-            :key="`${entry.timestamp.getTime()}-${fingerprint(entry.report)}`"
-            class="log-row"
-            @click="openAnnotation(entry)"
+        <template v-if="groupedLogs.length"
+          ><div
+            v-for="group in groupedLogs"
+            :key="`${group.timestamp.getTime()}-${group.entries.map(({ device_id }) => device_id).join()}`"
+            class="log-group"
           >
-            <time>{{ entry.timestamp.toLocaleTimeString() }}</time
-            ><code
-              >report 0x{{ hex(entry.report.report_id) }}
-              {{ entry.report.bytes.map(hex).join(" ") }}</code
-            ><span v-if="builtInLabels(entry).length" class="annotation-tags"
-              ><span
-                v-for="label in builtInLabels(entry)"
-                :key="`${label.target}-${label.phase}`"
-                class="annotation-tag built-in"
-                >{{ labelText(label) }}</span
-              ></span
-            ><span
-              v-else-if="savedAnnotation(entry)"
-              class="annotation-tag"
-              :class="{ legacy: !savedAnnotation(entry)?.previous_report }"
-              >{{
-                labelText(
-                  savedAnnotation(entry)!.label,
-                  !savedAnnotation(entry)?.previous_report,
-                )
-              }}</span
-            ><span v-else class="label-prompt">Label</span>
-          </button></template
+            <time>{{ group.timestamp.toLocaleTimeString() }}</time>
+            <div class="log-lines">
+              <button
+                v-for="entry in group.entries"
+                :key="`${entry.device_id}-${fingerprint(entry.report)}`"
+                class="log-row"
+                @click="openAnnotation(entry)"
+              >
+                <code
+                  ><b>{{
+                    controllers.find(({ id }) => id === entry.device_id)
+                      ?.product_id === 0x2007
+                      ? "R"
+                      : "L"
+                  }}</b>
+                  {{ formatReport(entry.report) }}</code
+                ><span
+                  v-if="builtInLabels(entry).length"
+                  class="annotation-tags"
+                  ><span
+                    v-for="label in builtInLabels(entry)"
+                    :key="`${label.target}-${label.phase}`"
+                    class="annotation-tag built-in"
+                    >{{ labelText(label) }}</span
+                  ></span
+                ><span
+                  v-else-if="savedAnnotation(entry)"
+                  class="annotation-tag"
+                  :class="{ legacy: !savedAnnotation(entry)?.previous_report }"
+                  >{{
+                    labelText(
+                      savedAnnotation(entry)!.label,
+                      !savedAnnotation(entry)?.previous_report,
+                    )
+                  }}</span
+                ><span v-else class="label-prompt">Label</span>
+              </button>
+            </div>
+          </div></template
         ><span v-else
           >Choose a Joy-Con, then move a stick or press a button.</span
         >
@@ -660,7 +759,9 @@ onBeforeUnmount(() => {
           <p class="eyebrow">ANNOTATE SAMPLE</p>
           <h2 class="section-title">Give this report a meaning</h2>
         </div>
-        <button class="secondary" value="cancel">Close</button>
+        <button class="secondary" type="button" @click="dialog?.close()">
+          Close
+        </button>
       </header>
       <p class="selected-report">{{ selectedReportText }}</p>
       <div class="annotation-kinds">

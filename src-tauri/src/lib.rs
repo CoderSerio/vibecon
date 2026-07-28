@@ -1,13 +1,13 @@
 use hidapi::HidApi;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     env,
     fs::{self, OpenOptions},
     io::Write,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -51,13 +51,13 @@ struct StreamEvent {
 
 #[derive(Clone)]
 struct StreamState {
-    generation: Arc<AtomicU64>,
+    active_ids: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Default for StreamState {
     fn default() -> Self {
         Self {
-            generation: Arc::new(AtomicU64::new(0)),
+            active_ids: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }
@@ -152,7 +152,9 @@ fn start_joycon_stream(
     state: tauri::State<StreamState>,
     id: String,
 ) -> Result<(), String> {
-    let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    if !state.active_ids.lock().map_err(|_| "Input stream state is unavailable")?.insert(id.clone()) {
+        return Ok(());
+    }
     let stream_state = state.inner().clone();
     thread::spawn(move || {
         let result = (|| -> Result<(), String> {
@@ -165,7 +167,7 @@ fn start_joycon_stream(
                 .open_device(&api)
                 .map_err(|error| format!("Could not open Joy-Con input: {error}"))?;
             let mut buffer = [0_u8; 64];
-            while stream_state.generation.load(Ordering::SeqCst) == generation {
+            while stream_state.active_ids.lock().map(|ids| ids.contains(&id)).unwrap_or(false) {
                 let count = device
                     .read_timeout(&mut buffer, 8)
                     .map_err(|error| format!("Could not read Joy-Con input: {error}"))?;
@@ -182,13 +184,18 @@ fn start_joycon_stream(
         if let Err(message) = result {
             let _ = app.emit("joycon-stream-error", message);
         }
+        if let Ok(mut ids) = stream_state.active_ids.lock() {
+            ids.remove(&id);
+        }
     });
     Ok(())
 }
 
 #[tauri::command]
-fn stop_joycon_stream(state: tauri::State<StreamState>) {
-    state.generation.fetch_add(1, Ordering::SeqCst);
+fn stop_joycon_stream(state: tauri::State<StreamState>, id: Option<String>) {
+    if let Ok(mut ids) = state.active_ids.lock() {
+        if let Some(id) = id { ids.remove(&id); } else { ids.clear(); }
+    }
 }
 
 fn annotation_path() -> Result<PathBuf, String> {
