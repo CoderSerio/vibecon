@@ -5,7 +5,7 @@ type Controller = { id: string; name: string; product_id: number; transport: str
 type Stick = { x: number; y: number; normalized_x: number; normalized_y: number };
 type InputReport = { report_id: number; bytes: number[]; left_stick: Stick | null; right_stick: Stick | null; buttons: [number, number, number] | null };
 type StreamEvent = { device_id: string; report: InputReport };
-type Annotation = { version: number; created_at_ms: number; controller: { vendor_id: number; product_id: number; orientation: string }; previous_report?: { report_id: number; bytes: number[] }; report: { report_id: number; bytes: number[] }; label: { kind: "stick" | "button"; target: string; phase?: "pressed" | "released" } };
+type Annotation = { version: number; created_at_ms: number; controller: { vendor_id: number; product_id: number; orientation: string }; previous_report?: { report_id: number; bytes: number[] }; report: { report_id: number; bytes: number[] }; label: { kind: "stick" | "button"; target: string; phase?: "pressed" | "released" | "moved" | "reset" } };
 type LogEntry = { timestamp: Date; previous_report?: InputReport; report: InputReport };
 
 const controllersEl = document.querySelector<HTMLDivElement>("#controllers")!;
@@ -34,11 +34,12 @@ let selectedLog: LogEntry | undefined;
 let annotationKind: "stick" | "button" = "stick";
 let annotationTarget: string | undefined;
 let buttonPhase: "pressed" | "released" = "pressed";
+let stickPhase: "moved" | "reset" = "moved";
 const isTauriDesktop = "__TAURI_INTERNALS__" in window;
 
 function hex(byte: number) { return byte.toString(16).padStart(2, "0").toUpperCase(); }
 function fingerprint(report: { report_id: number; bytes: number[] }) { return `${report.report_id}:${report.bytes.map(hex).join("")}`; }
-function labelText(label: Annotation["label"], legacy = false) { const text = label.kind === "stick" ? `Stick · ${label.target}` : `Button · ${label.target.replace("joycon_left.", "")} · ${label.phase ?? "pressed"}`; return legacy ? `${text} · legacy raw` : text; }
+function labelText(label: Annotation["label"], legacy = false) { const text = label.kind === "stick" ? `Stick · ${label.target} · ${label.phase ?? "moved"}` : `Button · ${label.target.replace("joycon_left.", "")} · ${label.phase ?? "pressed"}`; return legacy ? `${text} · legacy raw` : text; }
 function renderStick(stick: Stick | null) { return stick ? `x ${stick.normalized_x.toFixed(3)}\ny ${stick.normalized_y.toFixed(3)}\nraw ${stick.x}, ${stick.y}` : "No decoded value"; }
 
 function renderReport(report: InputReport) {
@@ -144,17 +145,21 @@ const buttonNames: Record<string, string> = {
   "joycon_left.minus": "Minus", "joycon_left.capture": "Capture", "joycon_left.sl": "SL", "joycon_left.sr": "SR", "joycon_left.l": "L", "joycon_left.zl": "ZL",
 };
 function openAnnotation(entry: LogEntry) {
-  selectedLog = entry; annotationKind = "stick"; annotationTarget = undefined; buttonPhase = "pressed"; saveAnnotationEl.disabled = true;
+  selectedLog = entry; annotationKind = "stick"; annotationTarget = undefined; buttonPhase = "pressed"; stickPhase = "moved"; saveAnnotationEl.disabled = true;
   selectedReportEl.textContent = `report 0x${hex(entry.report.report_id)} · ${entry.report.bytes.map(hex).join(" ")}`;
   document.querySelectorAll(".kind").forEach((kind) => kind.classList.toggle("active", (kind as HTMLElement).dataset.kind === annotationKind));
   renderPicker(); modal.showModal();
 }
 function renderPicker() {
-  pickerEl.replaceChildren(); annotationChoiceEl.textContent = "Choose a fixed target.";
+  pickerEl.replaceChildren();
+  annotationChoiceEl.textContent = annotationTarget ? `Selected: ${annotationKind === "stick" ? `${annotationTarget} · ${stickPhase}` : `${buttonNames[annotationTarget]} · ${buttonPhase}`}` : "Choose a fixed target.";
   if (annotationKind === "stick") {
+    const phasePicker = document.createElement("div"); phasePicker.className = "phase-picker";
+    (["moved", "reset"] as const).forEach((phase) => { const phaseButton = document.createElement("button"); phaseButton.type = "button"; phaseButton.className = phase === stickPhase ? "selected" : ""; phaseButton.textContent = phase === "moved" ? "Moved" : "Reset to center"; phaseButton.addEventListener("click", () => { stickPhase = phase; annotationTarget = phase === "reset" ? "center" : undefined; saveAnnotationEl.disabled = phase !== "reset"; renderPicker(); }); phasePicker.append(phaseButton); });
+    pickerEl.append(phasePicker);
     const radar = document.createElement("div"); radar.className = "stick-radar";
     stickTargets.forEach((target) => {
-      const targetButton = document.createElement("button"); targetButton.type = "button"; targetButton.className = `radar-point ${target}`; targetButton.title = target; targetButton.textContent = target === "center" ? "•" : "";
+      const targetButton = document.createElement("button"); targetButton.type = "button"; targetButton.className = `radar-point ${target}`; targetButton.classList.toggle("selected", annotationTarget === target); targetButton.title = target; targetButton.textContent = target === "center" ? "•" : ""; targetButton.disabled = stickPhase === "reset" && target !== "center";
       targetButton.addEventListener("click", () => chooseTarget(target)); radar.append(targetButton);
     }); pickerEl.append(radar);
   } else {
@@ -166,7 +171,7 @@ function renderPicker() {
     rightColumn.append(phasePicker);
     const picker = document.createElement("div"); picker.className = "button-picker";
     buttonTargets.forEach((target) => {
-      const targetButton = document.createElement("button"); targetButton.type = "button"; targetButton.dataset.target = target; targetButton.textContent = buttonNames[target];
+      const targetButton = document.createElement("button"); targetButton.type = "button"; targetButton.dataset.target = target; targetButton.classList.toggle("selected", annotationTarget === target); targetButton.textContent = buttonNames[target];
       targetButton.addEventListener("mouseenter", () => previewControl(target, true));
       targetButton.addEventListener("mouseleave", () => previewControl(target, false));
       targetButton.addEventListener("click", () => chooseTarget(target)); picker.append(targetButton);
@@ -180,14 +185,14 @@ function previewControl(target: string, active: boolean) {
 }
 function chooseTarget(target: string) {
   annotationTarget = target; saveAnnotationEl.disabled = false;
-  annotationChoiceEl.textContent = `Selected: ${annotationKind === "stick" ? target : `${buttonNames[target]} · ${buttonPhase}`}`;
+  annotationChoiceEl.textContent = `Selected: ${annotationKind === "stick" ? `${target} · ${stickPhase}` : `${buttonNames[target]} · ${buttonPhase}`}`;
   pickerEl.querySelectorAll("button").forEach((button) => button.classList.toggle("selected", button.getAttribute("title") === target || button.dataset.target === target));
   pickerEl.querySelectorAll<HTMLElement>("[data-picker-control]").forEach((control) => control.classList.toggle("picker-selected", control.dataset.pickerControl === target));
 }
 async function saveAnnotation() {
   if (!selectedLog || !selectedController || !annotationTarget) return;
   try {
-    const annotation = await invoke<Annotation>("save_annotation", { draft: { controller: { vendor_id: 0x057e, product_id: selectedController.product_id, orientation: "portrait" }, previous_report: selectedLog.previous_report ? { report_id: selectedLog.previous_report.report_id, bytes: selectedLog.previous_report.bytes } : undefined, report: { report_id: selectedLog.report.report_id, bytes: selectedLog.report.bytes }, label: { kind: annotationKind, target: annotationTarget, phase: annotationKind === "button" ? buttonPhase : undefined } } });
+    const annotation = await invoke<Annotation>("save_annotation", { draft: { controller: { vendor_id: 0x057e, product_id: selectedController.product_id, orientation: "portrait" }, previous_report: selectedLog.previous_report ? { report_id: selectedLog.previous_report.report_id, bytes: selectedLog.previous_report.bytes } : undefined, report: { report_id: selectedLog.report.report_id, bytes: selectedLog.report.bytes }, label: { kind: annotationKind, target: annotationTarget, phase: annotationKind === "button" ? buttonPhase : stickPhase } } });
     annotations.push(annotation); renderLogs(); modal.close();
   } catch (error) { annotationChoiceEl.textContent = `Save failed: ${String(error)}`; }
 }
