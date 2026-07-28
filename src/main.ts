@@ -28,6 +28,7 @@ let annotations: Annotation[] = [];
 let unlistenInput: UnlistenFn | undefined;
 let unlistenError: UnlistenFn | undefined;
 let lastPresentedAt = 0;
+let lastKeyOperation: string | undefined;
 let selectedLog: LogEntry | undefined;
 let annotationKind: "stick" | "button" = "stick";
 let annotationTarget: string | undefined;
@@ -56,17 +57,38 @@ function updateButtons(report: InputReport) {
   for (const [direction, mask] of Object.entries(directions)) if ((buttonMask & mask) !== 0) document.querySelector(`[data-control="${direction}"]`)?.classList.add("active");
   buttonsEl.value = `D-pad 0x${hex(buttonMask)} · stick HAT ${hat === 8 ? "neutral" : hat} · extra 0x${hex(extraButtons)}`;
 }
-function present(report: InputReport) {
-  renderReport(report);
+function appendLog(report: InputReport) {
   logs.unshift({ timestamp: new Date(), report });
   logs = logs.slice(0, 160);
   renderLogs();
 }
-function shouldPresent() {
+function stickBucket(stick: Stick | null) {
+  if (!stick) return "unknown";
+  const { normalized_x: x, normalized_y: y } = stick;
+  const radius = Math.hypot(x, y);
+  if (radius < 0.2) return "center";
+  const ring = radius < 0.7 ? "inner" : "outer";
+  // Eight fixed sectors intentionally mirror the annotation radar, keeping a
+  // high-resolution raw stream from producing a label-worthy log line per pixel.
+  const sectors = ["e", "se", "s", "sw", "w", "nw", "n", "ne"];
+  const index = Math.round(Math.atan2(y, x) / (Math.PI / 4));
+  return `${ring}-${sectors[(index + 8) % 8]}`;
+}
+function keyOperation(report: InputReport) {
+  const buttons = report.buttons?.join(":") ?? "none";
+  return `${buttons}|${stickBucket(report.left_stick)}`;
+}
+function shouldLog(report: InputReport) {
   const rate = sampleRateEl.value;
   if (rate === "all") return true;
+  if (rate === "key") {
+    const current = keyOperation(report);
+    if (current === lastKeyOperation) return false;
+    lastKeyOperation = current;
+    return true;
+  }
   const now = performance.now();
-  const interval = 1000 / Number(rate);
+  const interval = rate === "75" ? 75 : 1000 / Number(rate);
   if (now - lastPresentedAt < interval) return false;
   lastPresentedAt = now;
   return true;
@@ -88,6 +110,7 @@ function renderLogs() {
 
 function selectController(controller: Controller) {
   selectedController = controller;
+  lastKeyOperation = undefined;
   document.querySelectorAll<HTMLButtonElement>(".controller").forEach((button) => button.classList.toggle("selected", button.dataset.id === controller.id));
   statusEl.textContent = `Streaming ${controller.name}. Move a stick or press a button.`;
   statusEl.className = "status connected";
@@ -147,12 +170,17 @@ async function saveAnnotation() {
 window.addEventListener("DOMContentLoaded", async () => {
   document.querySelector<HTMLButtonElement>("#refresh")!.addEventListener("click", refreshControllers);
   document.querySelector<HTMLButtonElement>("#clear-log")!.addEventListener("click", () => { logs = []; renderLogs(); });
-  sampleRateEl.addEventListener("change", () => { lastPresentedAt = 0; });
+  sampleRateEl.addEventListener("change", () => { lastPresentedAt = 0; lastKeyOperation = undefined; });
   document.querySelectorAll<HTMLButtonElement>(".kind").forEach((button) => button.addEventListener("click", () => { annotationKind = button.dataset.kind as "stick" | "button"; annotationTarget = undefined; saveAnnotationEl.disabled = true; document.querySelectorAll(".kind").forEach((kind) => kind.classList.toggle("active", kind === button)); renderPicker(); }));
   saveAnnotationEl.addEventListener("click", () => { void saveAnnotation(); });
   if (!isTauriDesktop) { await refreshControllers(); return; }
   annotations = await invoke<Annotation[]>("load_annotations").catch((error) => { showError(error); return []; });
-  unlistenInput = await listen<StreamEvent>("joycon-input", (event) => { if (event.payload.device_id === selectedController?.id && shouldPresent()) present(event.payload.report); });
+  unlistenInput = await listen<StreamEvent>("joycon-input", (event) => {
+    if (event.payload.device_id !== selectedController?.id) return;
+    // The visualizer is deliberately independent of logging policy.
+    renderReport(event.payload.report);
+    if (shouldLog(event.payload.report)) appendLog(event.payload.report);
+  });
   unlistenError = await listen<string>("joycon-stream-error", (event) => showError(event.payload));
   await refreshControllers();
 });

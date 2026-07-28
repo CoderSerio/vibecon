@@ -72,12 +72,14 @@
             <p class="hint">Click any report to label it. Clearing the view never deletes saved labels.</p>
           </div>
           <div class="log-actions">
-            <label>Presentation
+            <label>Log policy
               <select id="sample-rate">
-                <option value="all">All reports</option>
+                <option value="key" selected>Key operations</option>
+                <option value="75">75 ms snapshots (original)</option>
                 <option value="60">60 Hz</option>
-                <option value="30" selected>30 Hz</option>
+                <option value="30">30 Hz</option>
                 <option value="10">10 Hz</option>
+                <option value="all">All reports</option>
               </select>
             </label>
             <button id="clear-log" class="secondary">Clear</button>

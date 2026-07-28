@@ -24,8 +24,9 @@ Run the Tauri desktop app to:
 - render an original CSS Joy-Con visualizer whose primary stick follows the
   live axis and whose confirmed D-pad HAT states glow;
 - keep one HID device handle open and forward input reports to the desktop UI;
-- choose whether the log presents every report, or samples the live stream at
-  60, 30, or 10 Hz without throttling physical collection;
+- keep the visualizer at full input rate while choosing a log policy: key
+  operations (the default), the original 75ms snapshots, 60/30/10 Hz samples,
+  or every raw report;
 - click a report to label it as a fixed stick position or Joy-Con control;
 - append labels to `~/.vibecon/annotations.jsonl`, then show matching labels
   next to later reports.
