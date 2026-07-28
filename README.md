@@ -19,7 +19,8 @@ Run the Tauri desktop app to:
 - find connected Nintendo HID devices, including `Joy-Con (L)` and `Joy-Con (R)`;
 - select a controller and stream its latest raw HID reports;
 - show decoded stick values and button bytes for native Joy-Con `0x30` reports
-  and macOS generic-HID `0x3f` reports;
+  and macOS generic-HID `0x3f` reports (macOS currently quantizes Joy-Con (L)
+  stick movement into an eight-way HAT);
 - render an original CSS Joy-Con visualizer whose primary stick follows the
   live axis and whose confirmed D-pad HAT states glow;
 - retain the latest 80 reports for copying and diagnosis.

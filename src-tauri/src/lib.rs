@@ -98,7 +98,9 @@ fn decode_standard_report(bytes: &[u8]) -> (Option<Stick>, Option<Stick>, Option
         // macOS exposes paired Joy-Cons through its generic HID driver as a
         // compact 0x3f report instead of Nintendo's native 0x30 report.
         // Bytes 4...12 contain four little-endian 16-bit axes centred at 0x8000.
-        // Byte 2 is a button bitfield and byte 3 is an 8-way HAT (8 = neutral).
+        // Byte 1 is the button bitfield on the macOS report. For Joy-Con (L),
+        // its low four bits are the D-pad: left 0x01, down 0x02, up 0x04,
+        // right 0x08. Bytes 2 and 3 are retained for the remaining controls.
         let decode_macos_axis = |offset: usize| {
             let x = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
             let y = u16::from_le_bytes([bytes[offset + 2], bytes[offset + 3]]);
@@ -109,10 +111,32 @@ fn decode_standard_report(bytes: &[u8]) -> (Option<Stick>, Option<Stick>, Option
                 normalized_y: (f32::from(y) - 32768.0) / 32767.0,
             }
         };
+        // The macOS Joy-Con (L) descriptor exposes its physical stick as a
+        // discrete eight-way HAT in byte 3; the four 16-bit generic axes stay
+        // centred. Use the HAT to animate the primary stick instead.
+        let stick_from_hat = |hat: u8| {
+            let (normalized_x, normalized_y) = match hat {
+                0 => (0.0, -1.0),
+                1 => (0.707, -0.707),
+                2 => (1.0, 0.0),
+                3 => (0.707, 0.707),
+                4 => (0.0, 1.0),
+                5 => (-0.707, 0.707),
+                6 => (-1.0, 0.0),
+                7 => (-0.707, -0.707),
+                _ => (0.0, 0.0), // 8 is neutral.
+            };
+            Stick {
+                x: ((normalized_x + 1.0) * 32767.5) as u16,
+                y: ((normalized_y + 1.0) * 32767.5) as u16,
+                normalized_x,
+                normalized_y,
+            }
+        };
         return (
+            Some(stick_from_hat(bytes[3])),
             Some(decode_macos_axis(4)),
-            Some(decode_macos_axis(8)),
-            Some([bytes[2], bytes[3], 0]),
+            Some([bytes[1], bytes[2], bytes[3]]),
         );
     }
     if bytes.len() < 12 || bytes[0] != 0x30 {

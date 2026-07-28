@@ -56,17 +56,16 @@ function updateButtons(report: InputReport) {
     return;
   }
 
-  const [buttonMask, hat] = report.buttons;
-  // macOS's 0x3f report uses an eight-way HAT in byte 3. It is already a
-  // confirmed mapping for the D-pad; the remaining Joy-Con button bits will be
-  // named only after a guided recording pass.
-  const directions: Record<string, number[]> = {
-    up: [0, 1, 7], right: [1, 2, 3], down: [3, 4, 5], left: [5, 6, 7],
+  const [buttonMask, extraButtons, hat] = report.buttons;
+  // Confirmed from a paired Joy-Con (L) on macOS. The D-pad is a bitfield in
+  // byte 1 of report 0x3f, not the HAT byte as originally assumed.
+  const directions: Record<string, number> = {
+    left: 0x01, down: 0x02, up: 0x04, right: 0x08,
   };
-  for (const [direction, hats] of Object.entries(directions)) {
-    if (hats.includes(hat)) document.querySelector(`[data-control="${direction}"]`)?.classList.add("active");
+  for (const [direction, mask] of Object.entries(directions)) {
+    if ((buttonMask & mask) !== 0) document.querySelector(`[data-control="${direction}"]`)?.classList.add("active");
   }
-  buttonsEl.value = `HAT ${hat === 8 ? "neutral" : hat} · buttons 0x${hex(buttonMask)}`;
+  buttonsEl.value = `D-pad 0x${hex(buttonMask)} · stick HAT ${hat === 8 ? "neutral" : hat} · extra 0x${hex(extraButtons)}`;
 }
 
 function selectController(controller: Controller) {
