@@ -105,7 +105,7 @@ function renderLogs() {
     const key = fingerprint(entry.report);
     const matches = annotations.filter((annotation) => annotation.previous_report ? Boolean(entry.previous_report) && fingerprint(annotation.previous_report) === fingerprint(entry.previous_report!) && fingerprint(annotation.report) === key : fingerprint(annotation.report) === key);
     const match = matches[matches.length - 1];
-    row.innerHTML = `<time>${entry.timestamp.toLocaleTimeString()}</time><code>report 0x${hex(entry.report.report_id)}  ${entry.report.bytes.map(hex).join(" ")}</code>${match ? `<span class="annotation-tag">${labelText(match.label, !match.previous_report)}</span>` : "<span class=\"label-prompt\">Label</span>"}`;
+    row.innerHTML = `<time>${entry.timestamp.toLocaleTimeString()}</time><code>report 0x${hex(entry.report.report_id)}  ${entry.report.bytes.map(hex).join(" ")}</code>${match ? `<span class="annotation-tag${match.previous_report ? "" : " legacy"}">${labelText(match.label, !match.previous_report)}</span>` : "<span class=\"label-prompt\">Label</span>"}`;
     row.addEventListener("click", () => openAnnotation(entry));
     transcriptEl.append(row);
   }
