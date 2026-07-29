@@ -76,7 +76,7 @@ type MappingConfig = {
 
 function defaultMappingConfig(): MappingConfig {
   return {
-    version: 1,
+    version: 2,
     activePresetId: "codex-cowork",
     presets: [
       {
@@ -729,7 +729,7 @@ function controlPreviewTarget(control: string) {
   return control.replace(/\.stick_(left|right)$/, ".stick_press");
 }
 async function copyAgentPrompt() {
-  const prompt = `You are editing VibeCon's mapping configuration. Read ~/.vibecon/mappings.json and keep version 1. You may only use the existing controls and safe actions: window_previous, window_next, focus_codex, focus_next, focus_previous, activate_focused. Preserve valid JSON, unique preset and binding ids, then explain the change. Do not add shell commands or arbitrary automation.`;
+  const prompt = `You are editing VibeCon's mapping configuration. Read ~/.vibecon/mappings.json and keep version 2. You may only use the existing controls and safe actions: window_previous, window_next, focus_codex, focus_next, focus_previous, activate_focused. Preserve valid JSON, unique preset and binding ids, then explain the change. Do not add shell commands or arbitrary automation.`;
   try {
     await navigator.clipboard.writeText(prompt);
     mappingFeedback.value = t("mapping.copied");

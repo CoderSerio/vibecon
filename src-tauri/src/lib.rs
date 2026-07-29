@@ -192,7 +192,7 @@ impl MappingConfig {
 impl Default for MappingConfig {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             active_preset_id: "codex-cowork".to_owned(),
             presets: vec![
                 MappingPreset {
@@ -221,18 +221,22 @@ impl Default for MappingConfig {
                     enabled: false,
                     bindings: vec![],
                 },
-                MappingPreset {
-                    id: "keyboard-focus".to_owned(),
-                    name: "Keyboard Focus".to_owned(),
-                    enabled: false,
-                    bindings: vec![
-                        mapping_binding("focus-previous", "joycon_left.dpad_up", "focus_previous"),
-                        mapping_binding("focus-next", "joycon_left.dpad_down", "focus_next"),
-                        mapping_binding("activate-focused", "joycon_right.a", "activate_focused"),
-                    ],
-                },
+                keyboard_focus_preset(),
             ],
         }
+    }
+}
+
+fn keyboard_focus_preset() -> MappingPreset {
+    MappingPreset {
+        id: "keyboard-focus".to_owned(),
+        name: "Keyboard Focus".to_owned(),
+        enabled: false,
+        bindings: vec![
+            mapping_binding("focus-previous", "joycon_left.dpad_up", "focus_previous"),
+            mapping_binding("focus-next", "joycon_left.dpad_down", "focus_next"),
+            mapping_binding("activate-focused", "joycon_right.a", "activate_focused"),
+        ],
     }
 }
 
@@ -820,8 +824,24 @@ fn write_mapping_config(config: &MappingConfig) -> Result<(), String> {
         .map_err(|error| format!("Could not write mapping configuration: {error}"))
 }
 
+/// Mapping config v2 adds the opt-in Keyboard Focus preset. v1 files are
+/// upgraded in place without changing their active preset or user bindings.
+fn migrate_mapping_config(mut config: MappingConfig) -> Result<(MappingConfig, bool), String> {
+    match config.version {
+        1 => {
+            if !config.presets.iter().any(|preset| preset.id == "keyboard-focus") {
+                config.presets.push(keyboard_focus_preset());
+            }
+            config.version = 2;
+            Ok((config, true))
+        }
+        2 => Ok((config, false)),
+        _ => Err("Unsupported mapping configuration version".to_owned()),
+    }
+}
+
 fn validate_mapping_config(config: &MappingConfig) -> Result<(), String> {
-    if config.version != 1 {
+    if config.version != 2 {
         return Err("Unsupported mapping configuration version".to_owned());
     }
     if config.presets.is_empty() {
@@ -880,7 +900,11 @@ fn load_mapping_config() -> Result<MappingConfig, String> {
             .map_err(|error| format!("Could not read mapping configuration: {error}"))?;
         let config: MappingConfig = serde_json::from_str(&content)
             .map_err(|error| format!("Invalid mapping configuration in {}: {error}", path.display()))?;
+        let (config, migrated) = migrate_mapping_config(config)?;
         validate_mapping_config(&config)?;
+        if migrated {
+            write_mapping_config(&config)?;
+        }
         return Ok(config);
     }
     let legacy_path = mapping_settings_path()?;
@@ -1069,6 +1093,20 @@ mod tests {
     #[test]
     fn built_in_mapping_config_is_valid() {
         assert!(validate_mapping_config(&MappingConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn v1_mapping_config_migrates_keyboard_focus_without_changing_active_preset() {
+        let mut config = MappingConfig::default();
+        config.version = 1;
+        config.presets.retain(|preset| preset.id != "keyboard-focus");
+        config.active_preset_id = "code".to_owned();
+        let (config, migrated) = migrate_mapping_config(config).expect("v1 config migrates");
+        assert!(migrated);
+        assert_eq!(config.version, 2);
+        assert_eq!(config.active_preset_id, "code");
+        assert!(config.presets.iter().any(|preset| preset.id == "keyboard-focus"));
+        assert!(validate_mapping_config(&config).is_ok());
     }
 
     #[test]
