@@ -110,6 +110,9 @@ src-tauri/src/lib.rs          HID 流、Joy-Con 解码和原生命令
 docs/images/                  Logo 与 README 截图
 ```
 
+当前 release candidate 的真机检查步骤见
+[0.0.4 手动 QA 清单](./docs/qa-0.0.4.md)。
+
 ## Windows
 
 桌面 UI 与控制器核心没有绑定 Swift 或 macOS API；但当前窗口切换只实现了 macOS，Windows 的 HID 行为也还需要真机测试。Windows 是明确目标，不是当前兼容性承诺。

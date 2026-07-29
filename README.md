@@ -110,6 +110,9 @@ src-tauri/src/lib.rs    HID stream, Joy-Con decoding, native commands
 docs/images/            Logo and README screenshots
 ```
 
+For the current release candidate's real-device checks, see
+[the 0.0.4 manual QA list](./docs/qa-0.0.4.md).
+
 ## Windows
 
 The desktop UI and controller logic are not tied to Swift or macOS APIs. However, the current window mapping is macOS-only and Windows HID behavior still needs real-device testing. Windows support is a product goal—not a claim of current compatibility.
