@@ -55,6 +55,7 @@ Before it automates anything, VibeCon makes the controller observable: raw HID r
 - Detect paired **Joy-Con (L)** and **Joy-Con (R)** devices through the native Tauri/Rust HID backend.
 - Inspect one or both controllers at once; grouped logs keep a single timestamp with aligned L/R report rows.
 - Decode native `0x30` and macOS compact `0x3F` Joy-Con reports, including button bitfields and the observed eight-way HAT profile.
+- Surface the first raw accelerometer / gyroscope sample from native `0x30` reports. These values are intentionally uncalibrated observation data, not motion gestures yet.
 - Visualize both Joy-Cons in CSS: sticks move live; held controls glow and taps briefly persist as afterglow.
 - Choose a log policy: key operations, legacy 75 ms snapshots, 60/30/10 Hz samples, or every report; clear the visible log whenever needed.
 - Label captured reports as stick positions or button press/release samples. Labels are stored locally in `~/.vibecon/annotations.jsonl` and shown again for matching reports.

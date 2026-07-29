@@ -31,6 +31,7 @@ export default defineConfig({
     "readout-label": "text-xs tracking-[1px] text-[#9faeac] uppercase",
     "axis-output":
       "mb-5 whitespace-pre-line font-mono text-sm font-600 leading-[1.45] text-[#7de6c4]",
+    "imu-output": "mb-3 text-[11px] leading-[1.35] text-[#a9d9cc]",
   },
   safelist: ["connected", "error"],
 });

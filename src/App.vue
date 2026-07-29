@@ -18,12 +18,17 @@ type Stick = {
   normalized_x: number;
   normalized_y: number;
 };
+type ImuSample = {
+  acceleration: [number, number, number];
+  gyroscope: [number, number, number];
+};
 type InputReport = {
   report_id: number;
   bytes: number[];
   left_stick: Stick | null;
   right_stick: Stick | null;
   buttons: [number, number, number] | null;
+  imu: ImuSample | null;
 };
 type LogEntry = {
   device_id: string;
@@ -122,6 +127,8 @@ const annotations = ref<Annotation[]>([]);
 const sampleRate = ref("key");
 const leftStick = ref<Stick | null>(null);
 const rightStick = ref<Stick | null>(null);
+const leftImu = ref<ImuSample | null>(null);
+const rightImu = ref<ImuSample | null>(null);
 const activeControlsBySide = ref({
   left: [] as string[],
   right: [] as string[],
@@ -289,6 +296,11 @@ function renderStick(stick: Stick | null) {
   return stick
     ? `x ${stick.normalized_x.toFixed(3)}\ny ${stick.normalized_y.toFixed(3)}\nraw ${stick.x}, ${stick.y}`
     : "No decoded value";
+}
+function renderImu(imu: ImuSample | null) {
+  if (!imu) return t("debug.noImu");
+  const format = ([x, y, z]: [number, number, number]) => `x ${x}\ny ${y}\nz ${z}`;
+  return `accel\n${format(imu.acceleration)}\n\ngyro\n${format(imu.gyroscope)}`;
 }
 function labelText(label: Label, legacy = false) {
   const text =
@@ -471,8 +483,13 @@ function applyReport(report: InputReport, controller: Controller) {
   // button decoder, and debug readouts dormant outside the Debug page.
   if (activePage.value !== "debug") return;
 
-  if (side === "left") leftStick.value = report.left_stick;
-  else rightStick.value = report.right_stick;
+  if (side === "left") {
+    leftStick.value = report.left_stick;
+    leftImu.value = report.imu;
+  } else {
+    rightStick.value = report.right_stick;
+    rightImu.value = report.imu;
+  }
   if (!report.buttons) {
     activeControlsBySide.value[side] = [];
     buttonsReadout.value = "No decoded button data";
@@ -1040,7 +1057,11 @@ onBeforeUnmount(() => {
           <span class="readout-label">{{ t("debug.primaryStick") }}</span
           ><output class="axis-output">{{ renderStick(leftStick) }}</output
           ><span class="readout-label">{{ t("debug.secondaryAxes") }}</span
-          ><output class="axis-output">{{ renderStick(rightStick) }}</output>
+          ><output class="axis-output">{{ renderStick(rightStick) }}</output
+          ><span class="readout-label">{{ t("debug.leftImu") }}</span
+          ><output class="axis-output imu-output">{{ renderImu(leftImu) }}</output
+          ><span class="readout-label">{{ t("debug.rightImu") }}</span
+          ><output class="axis-output imu-output">{{ renderImu(rightImu) }}</output>
         </div>
         <JoyCon
           side="right"

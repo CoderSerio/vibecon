@@ -51,6 +51,14 @@ struct Stick {
     normalized_y: f32,
 }
 
+/// One raw 0x30 IMU sample. Values are intentionally left uncalibrated until
+/// the controller-specific factory calibration path is verified.
+#[derive(Clone, Serialize)]
+struct ImuSample {
+    acceleration: [i16; 3],
+    gyroscope: [i16; 3],
+}
+
 #[derive(Clone, Serialize)]
 struct InputReport {
     report_id: u8,
@@ -58,6 +66,7 @@ struct InputReport {
     left_stick: Option<Stick>,
     right_stick: Option<Stick>,
     buttons: Option<[u8; 3]>,
+    imu: Option<ImuSample>,
 }
 
 #[derive(Clone, Serialize)]
@@ -272,13 +281,14 @@ fn open_api() -> Result<HidApi, String> {
 }
 
 fn report_from_bytes(bytes: Vec<u8>, product_id: u16) -> InputReport {
-    let (left_stick, right_stick, buttons) = decode_joycon_report(&bytes, product_id);
+    let (left_stick, right_stick, buttons, imu) = decode_joycon_report(&bytes, product_id);
     InputReport {
         report_id: bytes[0],
         bytes,
         left_stick,
         right_stick,
         buttons,
+        imu,
     }
 }
 
@@ -945,7 +955,10 @@ fn save_annotation(draft: AnnotationDraft) -> Result<Annotation, String> {
 
 /// Native Joy-Con 0x30 reports carry packed 12-bit axes. macOS's generic HID
 /// driver currently exposes paired Joy-Con (L) through a compact 0x3f report.
-fn decode_joycon_report(bytes: &[u8], product_id: u16) -> (Option<Stick>, Option<Stick>, Option<[u8; 3]>) {
+fn decode_joycon_report(
+    bytes: &[u8],
+    product_id: u16,
+) -> (Option<Stick>, Option<Stick>, Option<[u8; 3]>, Option<ImuSample>) {
     if bytes.len() >= 12 && bytes[0] == 0x3f {
         let decode_macos_axis = |offset: usize| {
             let x = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
@@ -982,13 +995,13 @@ fn decode_joycon_report(bytes: &[u8], product_id: u16) -> (Option<Stick>, Option
         let hat_stick = stick_from_hat(bytes[3]);
         let axes_stick = decode_macos_axis(4);
         return if product_id == JOYCON_RIGHT_PRODUCT_ID {
-            (Some(axes_stick), Some(hat_stick), Some([bytes[1], bytes[2], bytes[3]]))
+            (Some(axes_stick), Some(hat_stick), Some([bytes[1], bytes[2], bytes[3]]), None)
         } else {
-            (Some(hat_stick), Some(axes_stick), Some([bytes[1], bytes[2], bytes[3]]))
+            (Some(hat_stick), Some(axes_stick), Some([bytes[1], bytes[2], bytes[3]]), None)
         };
     }
     if bytes.len() < 12 || bytes[0] != 0x30 {
-        return (None, None, None);
+        return (None, None, None, None);
     }
     let decode_stick = |offset: usize| {
         let x = u16::from(bytes[offset]) | (u16::from(bytes[offset + 1] & 0x0f) << 8);
@@ -1004,10 +1017,23 @@ fn decode_joycon_report(bytes: &[u8], product_id: u16) -> (Option<Stick>, Option
     // coordinates where Y grows downward. X already matches the portrait UI.
     let mut left_stick = decode_stick(6);
     left_stick.normalized_y = -left_stick.normalized_y;
+    let imu = if bytes.len() >= 25 {
+        let signed = |offset: usize| i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        Some(ImuSample {
+            // Standard 0x30 layout begins IMU sample 0 at byte 13: accel XYZ
+            // followed by gyro XYZ. Later samples are intentionally not
+            // averaged here, so capture logs retain the exact packet bytes.
+            acceleration: [signed(13), signed(15), signed(17)],
+            gyroscope: [signed(19), signed(21), signed(23)],
+        })
+    } else {
+        None
+    };
     (
         Some(left_stick),
         Some(decode_stick(9)),
         Some([bytes[3], bytes[4], bytes[5]]),
+        imu,
     )
 }
 
@@ -1079,5 +1105,21 @@ mod tests {
         assert_eq!(report[1], 0x0f);
         assert_eq!(&report[2..10], &[0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40]);
         assert_eq!(&report[10..], &[0x48, 0x01]);
+    }
+
+    #[test]
+    fn native_report_decodes_first_raw_imu_sample() {
+        let mut report = vec![0_u8; 25];
+        report[0] = 0x30;
+        report[13..15].copy_from_slice(&100_i16.to_le_bytes());
+        report[15..17].copy_from_slice(&(-200_i16).to_le_bytes());
+        report[17..19].copy_from_slice(&300_i16.to_le_bytes());
+        report[19..21].copy_from_slice(&(-400_i16).to_le_bytes());
+        report[21..23].copy_from_slice(&500_i16.to_le_bytes());
+        report[23..25].copy_from_slice(&(-600_i16).to_le_bytes());
+        let (_, _, _, imu) = decode_joycon_report(&report, JOYCON_LEFT_PRODUCT_ID);
+        let imu = imu.expect("native packet has IMU data");
+        assert_eq!(imu.acceleration, [100, -200, 300]);
+        assert_eq!(imu.gyroscope, [-400, 500, -600]);
     }
 }
