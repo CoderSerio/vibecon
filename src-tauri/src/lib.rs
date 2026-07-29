@@ -7,10 +7,11 @@ use std::{
     io::Write,
     path::PathBuf,
     sync::{
+        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(target_os = "macos")]
@@ -18,6 +19,8 @@ use core_graphics::{
     event::{CGEvent, CGEventFlags, CGEventTapLocation},
     event_source::{CGEventSource, CGEventSourceStateID},
 };
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 #[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -29,6 +32,7 @@ use tauri::Emitter;
 const NINTENDO_VENDOR_ID: u16 = 0x057e;
 const JOYCON_LEFT_PRODUCT_ID: u16 = 0x2006;
 const JOYCON_RIGHT_PRODUCT_ID: u16 = 0x2007;
+const WINDOW_SWITCH_TRIGGER_THRESHOLD: f32 = 0.60;
 
 #[derive(Serialize)]
 struct ControllerDevice {
@@ -72,6 +76,12 @@ impl Default for StreamState {
             active_ids: Arc::new(Mutex::new(HashSet::new())),
         }
     }
+}
+
+#[derive(Clone, Default)]
+struct MappingRuntimeState {
+    window_switch_active: Arc<AtomicBool>,
+    focus_codex_active: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -118,12 +128,15 @@ struct Annotation {
 #[derive(Deserialize, Serialize)]
 struct MappingSettings {
     window_switch_enabled: bool,
+    #[serde(default)]
+    focus_codex_enabled: bool,
 }
 
 impl Default for MappingSettings {
     fn default() -> Self {
         Self {
             window_switch_enabled: false,
+            focus_codex_enabled: false,
         }
     }
 }
@@ -175,12 +188,14 @@ fn list_joycons() -> Result<Vec<ControllerDevice>, String> {
 fn start_joycon_stream(
     app: tauri::AppHandle,
     state: tauri::State<StreamState>,
+    mapping_state: tauri::State<MappingRuntimeState>,
     id: String,
 ) -> Result<(), String> {
     if !state.active_ids.lock().map_err(|_| "Input stream state is unavailable")?.insert(id.clone()) {
         return Ok(());
     }
     let stream_state = state.inner().clone();
+    let mapping_state = mapping_state.inner().clone();
     thread::spawn(move || {
         let result = (|| -> Result<(), String> {
             let api = open_api()?;
@@ -192,16 +207,40 @@ fn start_joycon_stream(
                 .open_device(&api)
                 .map_err(|error| format!("Could not open Joy-Con input: {error}"))?;
             let mut buffer = [0_u8; 64];
+            // Keep the frontend responsive even when Bluetooth HID reports at
+            // a much higher rate than the WebView can render.
+            let mut last_emitted_at = Instant::now() - Duration::from_secs(1);
+            let mut window_switch_armed = true;
+            let mut last_window_switch_at = Instant::now() - Duration::from_secs(1);
+            let mut focus_codex_armed = true;
             while stream_state.active_ids.lock().map(|ids| ids.contains(&id)).unwrap_or(false) {
                 let count = device
                     .read_timeout(&mut buffer, 8)
                     .map_err(|error| format!("Could not read Joy-Con input: {error}"))?;
-                if count > 0 {
+                if count > 0 && last_emitted_at.elapsed() >= Duration::from_millis(16) {
+                    let report = report_from_bytes(buffer[..count].to_vec(), info.product_id());
+                    if info.product_id() == JOYCON_LEFT_PRODUCT_ID
+                        && mapping_state.window_switch_active.load(Ordering::Relaxed)
+                    {
+                        maybe_switch_window(
+                            report.left_stick.as_ref(),
+                            &mut window_switch_armed,
+                            &mut last_window_switch_at,
+                        );
+                    }
+                    if mapping_state.focus_codex_active.load(Ordering::Relaxed) {
+                        maybe_focus_codex(
+                            &report,
+                            info.product_id(),
+                            &mut focus_codex_armed,
+                        );
+                    }
                     let event = StreamEvent {
                         device_id: id.clone(),
-                    report: report_from_bytes(buffer[..count].to_vec(), info.product_id()),
+                        report,
                     };
                     let _ = app.emit("joycon-input", event);
+                    last_emitted_at = Instant::now();
                 }
             }
             Ok(())
@@ -216,10 +255,78 @@ fn start_joycon_stream(
     Ok(())
 }
 
+fn maybe_focus_codex(report: &InputReport, product_id: u16, armed: &mut bool) {
+    let Some(buttons) = report.buttons else { return };
+    let pressed = match (report.report_id, product_id) {
+        // Native layout: byte 5 is L controls (D-pad up 0x02); byte 3 is R
+        // controls (X 0x02). We restrict the mapping to the matching device.
+        (0x30, JOYCON_LEFT_PRODUCT_ID) => buttons[2] & 0x02 != 0,
+        (0x30, JOYCON_RIGHT_PRODUCT_ID) => buttons[0] & 0x02 != 0,
+        (0x3f, JOYCON_LEFT_PRODUCT_ID) => buttons[0] & 0x04 != 0,
+        (0x3f, JOYCON_RIGHT_PRODUCT_ID) => buttons[0] & 0x02 != 0,
+        _ => false,
+    };
+    if !pressed {
+        *armed = true;
+        return;
+    }
+    if *armed {
+        *armed = false;
+        let _ = focus_codex();
+    }
+}
+
+fn maybe_switch_window(
+    stick: Option<&Stick>,
+    armed: &mut bool,
+    last_switch_at: &mut Instant,
+) {
+    let Some(stick) = stick else { return };
+    if stick.normalized_x.abs() < 0.35 {
+        *armed = true;
+        return;
+    }
+    if !*armed
+        || stick.normalized_x.abs() < WINDOW_SWITCH_TRIGGER_THRESHOLD
+        || last_switch_at.elapsed() < Duration::from_millis(300)
+    {
+        return;
+    }
+    *armed = false;
+    *last_switch_at = Instant::now();
+    let direction = if stick.normalized_x > 0.0 { "next" } else { "previous" };
+    let _ = switch_window(direction.to_owned());
+}
+
 #[tauri::command]
 fn stop_joycon_stream(state: tauri::State<StreamState>, id: Option<String>) {
     if let Ok(mut ids) = state.active_ids.lock() {
         if let Some(id) = id { ids.remove(&id); } else { ids.clear(); }
+    }
+}
+
+#[tauri::command]
+fn set_window_switch_active(state: tauri::State<MappingRuntimeState>, active: bool) {
+    state.window_switch_active.store(active, Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn set_focus_codex_active(state: tauri::State<MappingRuntimeState>, active: bool) {
+    state.focus_codex_active.store(active, Ordering::Relaxed);
+}
+
+fn focus_codex() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .args(["-a", "Codex"])
+            .spawn()
+            .map_err(|error| format!("Could not focus Codex: {error}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Focusing Codex is not implemented for this platform yet".to_owned())
     }
 }
 
@@ -298,6 +405,22 @@ fn mapping_accessibility_status() -> Result<String, String> {
     #[cfg(not(target_os = "macos"))]
     {
         Err("Window switching is not implemented for this platform yet".to_owned())
+    }
+}
+
+#[tauri::command]
+fn open_accessibility_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .spawn()
+            .map_err(|error| format!("Could not open macOS Accessibility settings: {error}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Accessibility settings are not implemented for this platform yet".to_owned())
     }
 }
 
@@ -449,8 +572,12 @@ fn decode_joycon_report(bytes: &[u8], product_id: u16) -> (Option<Stick>, Option
             normalized_y: (f32::from(y) - 2048.0) / 2048.0,
         }
     };
+    // Native Joy-Con Y grows upward, while the left visualizer uses screen
+    // coordinates where Y grows downward. X already matches the portrait UI.
+    let mut left_stick = decode_stick(6);
+    left_stick.normalized_y = -left_stick.normalized_y;
     (
-        Some(decode_stick(6)),
+        Some(left_stick),
         Some(decode_stick(9)),
         Some([bytes[3], bytes[4], bytes[5]]),
     )
@@ -460,13 +587,17 @@ fn decode_joycon_report(bytes: &[u8], product_id: u16) -> (Option<Stick>, Option
 pub fn run() {
     tauri::Builder::default()
         .manage(StreamState::default())
+        .manage(MappingRuntimeState::default())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             list_joycons,
             start_joycon_stream,
             stop_joycon_stream,
+            set_window_switch_active,
+            set_focus_codex_active,
             switch_window,
             mapping_accessibility_status,
+            open_accessibility_settings,
             load_mapping_settings,
             save_mapping_settings,
             load_annotations,

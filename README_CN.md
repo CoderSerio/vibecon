@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="#快速开始"><img src="https://img.shields.io/badge/platform-macOS%20%E4%BC%98%E5%85%88-111827?style=flat-square" alt="macOS 优先"></a>
+  <a href="#安装-macos-预览版"><img src="https://img.shields.io/badge/platform-macOS%20%E4%BC%98%E5%85%88-111827?style=flat-square" alt="macOS 优先"></a>
   <a href="#当前能力"><img src="https://img.shields.io/badge/status-%E5%AE%9E%E9%AA%8C%E6%80%A7-F97316?style=flat-square" alt="实验性"></a>
   <a href="#windows"><img src="https://img.shields.io/badge/Windows-%E8%AE%A1%E5%88%92%E4%B8%AD-2563EB?style=flat-square" alt="Windows 计划中"></a>
   <a href="./README.md"><img src="https://img.shields.io/badge/README-English-0AB9E6?style=flat-square" alt="English README"></a>
@@ -43,6 +43,13 @@ VibeCon 从一个很朴素的想法开始：与其买一个昂贵又封闭的「
 
 它不会一上来就自动化。第一步是把输入看清楚：原始 HID 报文、摇杆、按键高亮、采样频率和本地打标；之后再让你主动开启一项足够小、可以审阅的映射。
 
+<p align="center">
+  <a href="./docs/media/vibecon-window-switch-demo.mp4">
+    <img src="./docs/media/vibecon-window-switch-demo.gif" width="720" alt="Joy-Con 通过 VibeCon 切换窗口">
+  </a><br>
+  <sub>Joy-Con 实机切换窗口演示。点击查看原始视频。</sub>
+</p>
+
 ## 当前能力
 
 - 通过 Tauri/Rust 原生 HID 后端发现已配对的 **Joy-Con (L)** 和 **Joy-Con (R)**。
@@ -51,7 +58,7 @@ VibeCon 从一个很朴素的想法开始：与其买一个昂贵又封闭的「
 - 原创 CSS Joy-Con 可视化：摇杆实时同步、按住高亮、短按有残影提示。
 - 日志策略可选：关键操作、旧版 75ms 快照、60/30/10 Hz 采样或每一条 report；也可以随时清空当前可见日志。
 - 对抓到的 report 打标：摇杆点位或按键按下/抬起。数据只保存在 `~/.vibecon/annotations.jsonl`，再次命中时会回显标签。
-- **实验性 macOS 映射：** 在 **Mappings** 页面显式开启后，用左摇杆大幅向右/向左推，触发下一个/上一个 `Cmd+Tab` 窗口；带冷却、需回中复位。开关配置会写入 `~/.vibecon/mapping-settings.json`，但 Debug 页面打开时会临时失效，避免干扰抓包。
+- **实验性 macOS 映射：** 在 **Mappings** 页面显式开启后，用左摇杆向右/向左推，触发下一个/上一个 `Cmd+Tab` 窗口；也可以用 Joy-Con (L) 的方向上或 Joy-Con (R) 的 X 聚焦 Codex。开关配置会写入 `~/.vibecon/mapping-settings.json`，并在 Debug 页面临时失效，避免干扰抓包。
 
 ### 已观测到的 Joy-Con 规律
 
@@ -59,18 +66,7 @@ VibeCon 从一个很朴素的想法开始：与其买一个昂贵又封闭的「
 
 ![macOS 下观测到的 Joy-Con HAT report](./docs/images/macos-joycon-hat-debug.png)
 
-## 快速开始
-
-### 1. 配对 Joy-Con
-
-1. 将 Joy-Con 从 Switch 拆下并确保有电；
-2. 长按滑轨上的小圆形 **Sync** 键，直到玩家指示灯依次闪动；
-3. 打开 **系统设置 → 蓝牙**，连接 `Joy-Con (L)` 或 `Joy-Con (R)`；
-4. 需要同时调试两侧时，左右各自配对。
-
-如果列表里没有它：重新长按 Sync，并暂时让 Switch 远离或关机，避免它抢先回连。
-
-### 2. 启动原生桌面应用
+## 从源码运行
 
 前置条件：已安装当前版本的 Node.js、pnpm 与 Rust toolchain。
 
@@ -80,31 +76,17 @@ pnpm install
 pnpm tauri dev
 ```
 
-点击 **Refresh controllers**，选中一个或两个 Joy-Con，然后摇动摇杆或按下按键。
+先在 **系统设置 → 蓝牙** 配对 Joy-Con。在 VibeCon 中点击 **Refresh controllers**，选中一个或两个 Joy-Con，然后摇动摇杆或按下按键。
 
 > 不要用 `pnpm dev` 测手柄。它只启动浏览器里的 Vite UI，没有 Tauri Rust 后端，也没有本地 HID 权限。
 
-## 开启 macOS 窗口切换权限
+## 配置 macOS 映射
 
-实验性映射通过 macOS `System Events` 发送 `Cmd+Tab`，因此必须授予系统权限。
+1. 在 **Debug** 页面选中要使用的手柄。需要两个 Codex 聚焦按键时，左右两侧都选中。
+2. 打开 **Mappings**，显式开启所需映射。该页面会暂停 Debug 的可视化与日志，但 HID reader 仍会保持运行。
+3. 窗口切换需要给 VibeCon 授予 **辅助功能** 权限；如果缺失，Mappings 页面可以直接打开对应的系统设置页面。
 
-1. 先构建一次 debug App（得到固定的 app bundle）：
-
-   ```sh
-   pnpm tauri build --debug
-   ```
-
-2. 打开 **系统设置 → 隐私与安全性 → 辅助功能**。
-3. 点击 **+**，添加并开启：
-
-   ```text
-   /Users/carbon/Desktop/vibecon/src-tauri/target/debug/bundle/macos/VibeCon.app
-   ```
-
-4. 如果系统弹窗询问，请在 **隐私与安全性 → 自动化** 中允许 VibeCon 控制 **System Events**。
-5. 重启 `pnpm tauri dev`，进入 **Mappings** 页面，再手动勾选开关。
-
-映射现在会直接通过 macOS Quartz 发送快捷键，因此真正需要的是 **VibeCon 的辅助功能权限**；不再依赖额外的 `osascript` 自动化跳转。为了不干扰抓包，Debug 页面打开时映射会自动关闭。
+窗口切换直接通过 macOS Quartz 发送快捷键，因此只需要 **辅助功能** 权限；聚焦 Codex 使用系统应用启动器，不需要辅助功能权限。
 
 ## 开发
 
@@ -133,8 +115,8 @@ docs/images/                  Logo 与 README 截图
 
 ## 隐私
 
-手柄 report 与打标都只保留在本地，VibeCon 不发送遥测。现在唯一会自动执行的行为，是你明确开启的实验性 macOS 窗口切换；它不会执行 shell 命令，也不会自动批准 AI Agent 操作。
+手柄 report 与打标都只保留在本地，VibeCon 不发送遥测。它只会执行你明确开启的窗口切换和 Codex 聚焦；不会执行 shell 命令，也不会自动批准 AI Agent 操作。
 
 ## License
 
-等第一个通用控制器 profile 得到验证后，再确定开源许可证。
+[MIT](./LICENSE) © 2026 CoderSerio。

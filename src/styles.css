@@ -374,6 +374,11 @@ p {
   color: #9faeac;
   font-size: 13px;
 }
+.mapping-input-status {
+  margin: 0;
+  color: #7de6c4;
+  font-size: 13px;
+}
 .mapping-test {
   width: fit-content;
 }

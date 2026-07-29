@@ -43,11 +43,15 @@ type Annotation = {
   label: Label;
 };
 type StreamEvent = { device_id: string; report: InputReport };
-type MappingSettings = { window_switch_enabled: boolean };
+type MappingSettings = {
+  window_switch_enabled: boolean;
+  focus_codex_enabled: boolean;
+};
 
 const isTauriDesktop = "__TAURI_INTERNALS__" in window;
 const activePage = ref<"debug" | "mappings">("debug");
 const windowSwitchEnabled = ref(false);
+const focusCodexEnabled = ref(false);
 const controllers = ref<Controller[]>([]);
 const selectedControllers = ref<Controller[]>([]);
 const status = ref("Looking for Nintendo HID devices…");
@@ -65,6 +69,14 @@ const activeControls = computed(() => [
   ...activeControlsBySide.value.left,
   ...activeControlsBySide.value.right,
 ]);
+const mappingInputStatus = computed(() => {
+  const leftController = selectedControllers.value.find(
+    ({ product_id }) => product_id === 0x2006,
+  );
+  if (!leftController)
+    return "No Joy-Con (L) selected. Open Debug, refresh controllers, then select Joy-Con (L).";
+  return `${leftController.name} is selected. Debug visualization and logging are paused here.`;
+});
 const recentControls = ref<string[]>([]);
 const buttonsReadout = ref("D-pad 00 · waiting for input");
 const dialog = ref<HTMLDialogElement>();
@@ -72,6 +84,7 @@ const selectedLog = ref<LogEntry>();
 const annotationKind = ref<"stick" | "button">("stick");
 const annotationTarget = ref<string>();
 const mappingFeedback = ref("Enable the mapping, then return the stick to center before each trigger.");
+const accessibilityGranted = ref(false);
 const buttonPhase = ref<"pressed" | "released">("pressed");
 const stickPhase = ref<"moved" | "reset">("moved");
 const previewTarget = ref<string>();
@@ -81,17 +94,39 @@ const lastPresentedAt = new Map<string, number>();
 const lastKeyOperation = new Map<string, string>();
 const lastIncomingReport = new Map<string, InputReport>();
 let recentControlsTimer: ReturnType<typeof setTimeout> | undefined;
-let windowSwitchArmed = true;
-let lastWindowSwitchAt = 0;
 
 watch(activePage, (page) => {
   if (page === "mappings") void checkMappingAccessibility();
 });
 watch(windowSwitchEnabled, (window_switch_enabled) => {
   if (!isTauriDesktop) return;
-  void invoke("save_mapping_settings", { settings: { window_switch_enabled } }).catch(
-    showError,
-  );
+  void invoke("save_mapping_settings", {
+    settings: {
+      window_switch_enabled,
+      focus_codex_enabled: focusCodexEnabled.value,
+    },
+  }).catch(showError);
+});
+watch(focusCodexEnabled, (focus_codex_enabled) => {
+  if (!isTauriDesktop) return;
+  void invoke("save_mapping_settings", {
+    settings: {
+      window_switch_enabled: windowSwitchEnabled.value,
+      focus_codex_enabled,
+    },
+  }).catch(showError);
+});
+watch([activePage, windowSwitchEnabled], () => {
+  if (!isTauriDesktop) return;
+  void invoke("set_window_switch_active", {
+    active: activePage.value === "mappings" && windowSwitchEnabled.value,
+  }).catch(showError);
+});
+watch([activePage, focusCodexEnabled], () => {
+  if (!isTauriDesktop) return;
+  void invoke("set_focus_codex_active", {
+    active: activePage.value === "mappings" && focusCodexEnabled.value,
+  }).catch(showError);
 });
 
 const stickTargets = [
@@ -378,9 +413,12 @@ function shouldLog(report: InputReport, deviceId: string) {
 }
 function applyReport(report: InputReport, controller: Controller) {
   const side = controller.product_id === 0x2007 ? "right" : "left";
+  // Mapping only needs the stick direction. Keep the full reactive visualizer,
+  // button decoder, and debug readouts dormant outside the Debug page.
+  if (activePage.value !== "debug") return;
+
   if (side === "left") leftStick.value = report.left_stick;
   else rightStick.value = report.right_stick;
-  if (side === "left") maybeSwitchWindow(report.left_stick);
   if (!report.buttons) {
     activeControlsBySide.value[side] = [];
     buttonsReadout.value = "No decoded button data";
@@ -511,38 +549,23 @@ function applyReport(report: InputReport, controller: Controller) {
   );
   buttonsReadout.value = `D-pad 0x${hex(buttonMask)} · stick HAT ${hat === 8 ? "neutral" : hat} · extra 0x${hex(extraButtons)}`;
 }
-function maybeSwitchWindow(stick: Stick | null) {
-  if (activePage.value !== "mappings" || !windowSwitchEnabled.value || !stick)
-    return;
-  if (Math.abs(stick.normalized_x) < 0.35) {
-    windowSwitchArmed = true;
-    return;
-  }
-  if (
-    !windowSwitchArmed ||
-    Math.abs(stick.normalized_x) < 0.85 ||
-    performance.now() - lastWindowSwitchAt < 420
-  )
-    return;
-  windowSwitchArmed = false;
-  lastWindowSwitchAt = performance.now();
-  const direction = stick.normalized_x > 0 ? "next" : "previous";
-  mappingFeedback.value = "Sending macOS window shortcut…";
-  void invoke("switch_window", { direction })
-    .then(() => {
-      mappingFeedback.value =
-        direction === "next" ? "Sent Cmd+Tab." : "Sent Cmd+Shift+Tab.";
-    })
-    .catch((error) => {
-      mappingFeedback.value = `Mapping error: ${String(error)}`;
-      showError(error);
-    });
-}
 async function checkMappingAccessibility() {
   if (!isTauriDesktop) return;
-  mappingFeedback.value = await invoke<string>("mapping_accessibility_status").catch(
+  const result = await invoke<string>("mapping_accessibility_status").catch(
     (error) => `Could not check Accessibility: ${String(error)}`,
   );
+  accessibilityGranted.value = result.startsWith("Accessibility: granted");
+  mappingFeedback.value = result;
+}
+function openAccessibilitySettings() {
+  void invoke("open_accessibility_settings")
+    .then(() => {
+      mappingFeedback.value =
+        "Accessibility settings opened. Enable the VibeCon entry, then quit and reopen this app.";
+    })
+    .catch((error) => {
+      mappingFeedback.value = `Could not open Accessibility settings: ${String(error)}`;
+    });
 }
 function testWindowSwitch() {
   mappingFeedback.value = "Sending test Cmd+Tab…";
@@ -693,16 +716,18 @@ onMounted(async () => {
   const mappingSettings = await invoke<MappingSettings>("load_mapping_settings").catch(
     (error) => {
       showError(error);
-      return { window_switch_enabled: false };
+      return { window_switch_enabled: false, focus_codex_enabled: false };
     },
   );
   windowSwitchEnabled.value = mappingSettings.window_switch_enabled;
+  focusCodexEnabled.value = mappingSettings.focus_codex_enabled;
   unlistenInput = await listen<StreamEvent>("joycon-input", ({ payload }) => {
     const controller = selectedControllers.value.find(
       ({ id }) => id === payload.device_id,
     );
     if (!controller) return;
     applyReport(payload.report, controller);
+    if (activePage.value !== "debug") return;
     const previous = lastIncomingReport.get(payload.device_id);
     lastIncomingReport.set(payload.device_id, payload.report);
     if (shouldLog(payload.report, payload.device_id))
@@ -753,12 +778,24 @@ onBeforeUnmount(() => {
       <p class="hint">
         Move the left stick firmly left or right to switch macOS windows.
       </p>
+      <p class="mapping-input-status">{{ mappingInputStatus }}</p>
       <label class="mapping-toggle"
         ><input v-model="windowSwitchEnabled" type="checkbox" /> Enable Cmd+Tab
         mapping</label
       >
+      <label class="mapping-toggle"
+        ><input v-model="focusCodexEnabled" type="checkbox" /> Focus Codex
+        with L D-pad Up / R X</label
+      >
       <button class="app-button mapping-test" @click="testWindowSwitch">
         Test Cmd+Tab now
+      </button>
+      <button
+        v-if="!accessibilityGranted"
+        class="app-button mapping-test"
+        @click="openAccessibilitySettings"
+      >
+        Open Accessibility settings
       </button>
       <p class="mapping-feedback">{{ mappingFeedback }}</p>
     </section>
@@ -818,7 +855,7 @@ onBeforeUnmount(() => {
           :nub-transform="nubTransform"
         />
         <div class="axis-readout">
-          <span class="readout-label">Primary stick (macOS HAT)</span
+          <span class="readout-label">Primary stick</span
           ><output class="axis-output">{{ renderStick(leftStick) }}</output
           ><span class="readout-label">Secondary axes</span
           ><output class="axis-output">{{ renderStick(rightStick) }}</output>
