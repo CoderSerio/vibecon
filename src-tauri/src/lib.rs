@@ -208,6 +208,16 @@ impl Default for MappingConfig {
                     enabled: false,
                     bindings: vec![],
                 },
+                MappingPreset {
+                    id: "keyboard-focus".to_owned(),
+                    name: "Keyboard Focus".to_owned(),
+                    enabled: false,
+                    bindings: vec![
+                        mapping_binding("focus-previous", "joycon_left.dpad_up", "focus_previous"),
+                        mapping_binding("focus-next", "joycon_left.dpad_down", "focus_next"),
+                        mapping_binding("activate-focused", "joycon_right.a", "activate_focused"),
+                    ],
+                },
             ],
         }
     }
@@ -460,6 +470,9 @@ fn dispatch_mapping_action(action: &str) -> Result<(), String> {
         "window_next" => switch_window("next".to_owned()),
         "window_previous" => switch_window("previous".to_owned()),
         "focus_codex" => focus_codex(),
+        "focus_next" => move_keyboard_focus("next"),
+        "focus_previous" => move_keyboard_focus("previous"),
+        "activate_focused" => activate_keyboard_focus(),
         _ => Err(format!("Unsupported mapping action: {action}")),
     }
 }
@@ -537,6 +550,59 @@ fn switch_window(direction: String) -> Result<(), String> {
     {
         let _ = direction;
         Err("Window switching is not implemented for this platform yet".to_owned())
+    }
+}
+
+/// A deliberately small accessibility-navigation primitive. It does not read
+/// or manipulate an accessibility tree; it sends the standard keyboard focus
+/// keys to the foreground app, where normal Tab navigation is supported.
+fn move_keyboard_focus(direction: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        ensure_macos_accessibility()?;
+        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+            .map_err(|_| "Could not create a macOS keyboard event source")?;
+        if direction == "previous" {
+            post_key(&source, 56, true, CGEventFlags::CGEventFlagShift)?;
+            post_key(&source, 48, true, CGEventFlags::CGEventFlagShift)?;
+            post_key(&source, 48, false, CGEventFlags::CGEventFlagShift)?;
+            post_key(&source, 56, false, CGEventFlags::CGEventFlagNull)?;
+        } else {
+            post_key(&source, 48, true, CGEventFlags::CGEventFlagNull)?;
+            post_key(&source, 48, false, CGEventFlags::CGEventFlagNull)?;
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = direction;
+        Err("Keyboard focus navigation is not implemented for this platform yet".to_owned())
+    }
+}
+
+fn activate_keyboard_focus() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        ensure_macos_accessibility()?;
+        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+            .map_err(|_| "Could not create a macOS keyboard event source")?;
+        // Space activates the currently focused standard macOS control.
+        post_key(&source, 49, true, CGEventFlags::CGEventFlagNull)?;
+        post_key(&source, 49, false, CGEventFlags::CGEventFlagNull)?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Keyboard focus activation is not implemented for this platform yet".to_owned())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_macos_accessibility() -> Result<(), String> {
+    if macos_accessibility_trusted() {
+        Ok(())
+    } else {
+        Err("Accessibility is not granted to this running VibeCon process. Quit the app, enable VibeCon.app in System Settings → Privacy & Security → Accessibility, then reopen VibeCon.app.".to_owned())
     }
 }
 
@@ -694,7 +760,14 @@ fn known_mapping_controls() -> &'static [&'static str] {
 }
 
 fn known_mapping_actions() -> &'static [&'static str] {
-    &["window_previous", "window_next", "focus_codex"]
+    &[
+        "window_previous",
+        "window_next",
+        "focus_codex",
+        "focus_next",
+        "focus_previous",
+        "activate_focused",
+    ]
 }
 
 #[tauri::command]

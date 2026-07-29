@@ -48,7 +48,13 @@ type StreamEvent = { device_id: string; report: InputReport };
 type MappingBinding = {
   id: string;
   control: string;
-  action: "window_previous" | "window_next" | "focus_codex";
+  action:
+    | "window_previous"
+    | "window_next"
+    | "focus_codex"
+    | "focus_next"
+    | "focus_previous"
+    | "activate_focused";
   enabled: boolean;
 };
 type MappingPreset = {
@@ -89,6 +95,16 @@ function defaultMappingConfig(): MappingConfig {
         ],
       },
       { id: "inspect-only", name: "Inspect Only", enabled: false, bindings: [] },
+      {
+        id: "keyboard-focus",
+        name: "Keyboard Focus",
+        enabled: false,
+        bindings: [
+          { id: "focus-previous", control: "joycon_left.dpad_up", action: "focus_previous", enabled: true },
+          { id: "focus-next", control: "joycon_left.dpad_down", action: "focus_next", enabled: true },
+          { id: "activate-focused", control: "joycon_right.a", action: "activate_focused", enabled: true },
+        ],
+      },
     ],
   };
 }
@@ -661,15 +677,21 @@ function controlName(control: string) {
   return names[control] ?? control.replace("joycon_", "").replace(".", " · ");
 }
 function actionName(action: MappingBinding["action"]) {
-  return t(
-    `mapping.${action === "window_previous" ? "previousWindow" : action === "window_next" ? "nextWindow" : "focusCodex"}`,
-  );
+  const key = {
+    window_previous: "previousWindow",
+    window_next: "nextWindow",
+    focus_codex: "focusCodex",
+    focus_next: "focusNext",
+    focus_previous: "focusPrevious",
+    activate_focused: "activateFocused",
+  }[action];
+  return t(`mapping.${key}`);
 }
 function controlPreviewTarget(control: string) {
   return control.replace(/\.stick_(left|right)$/, ".stick_press");
 }
 async function copyAgentPrompt() {
-  const prompt = `You are editing VibeCon's mapping configuration. Read ~/.vibecon/mappings.json and keep version 1. You may only use the existing controls and safe actions: window_previous, window_next, focus_codex. Preserve valid JSON, unique preset and binding ids, then explain the change. Do not add shell commands or arbitrary automation.`;
+  const prompt = `You are editing VibeCon's mapping configuration. Read ~/.vibecon/mappings.json and keep version 1. You may only use the existing controls and safe actions: window_previous, window_next, focus_codex, focus_next, focus_previous, activate_focused. Preserve valid JSON, unique preset and binding ids, then explain the change. Do not add shell commands or arbitrary automation.`;
   try {
     await navigator.clipboard.writeText(prompt);
     mappingFeedback.value = t("mapping.copied");
