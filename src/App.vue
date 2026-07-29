@@ -63,14 +63,40 @@ type MappingConfig = {
   presets: MappingPreset[];
 };
 
+function defaultMappingConfig(): MappingConfig {
+  return {
+    version: 1,
+    activePresetId: "codex-cowork",
+    presets: [
+      {
+        id: "code",
+        name: "Code",
+        enabled: true,
+        bindings: [
+          { id: "window-previous", control: "joycon_left.stick_left", action: "window_previous", enabled: true },
+          { id: "window-next", control: "joycon_left.stick_right", action: "window_next", enabled: true },
+        ],
+      },
+      {
+        id: "codex-cowork",
+        name: "Codex Cowork",
+        enabled: true,
+        bindings: [
+          { id: "window-previous", control: "joycon_left.stick_left", action: "window_previous", enabled: true },
+          { id: "window-next", control: "joycon_left.stick_right", action: "window_next", enabled: true },
+          { id: "focus-codex-left", control: "joycon_left.dpad_up", action: "focus_codex", enabled: true },
+          { id: "focus-codex-right", control: "joycon_right.x", action: "focus_codex", enabled: true },
+        ],
+      },
+      { id: "inspect-only", name: "Inspect Only", enabled: false, bindings: [] },
+    ],
+  };
+}
+
 const isTauriDesktop = "__TAURI_INTERNALS__" in window;
 const { t, locale } = useI18n();
 const activePage = ref<"debug" | "mappings">("debug");
-const mappingConfig = ref<MappingConfig>({
-  version: 1,
-  activePresetId: "codex-cowork",
-  presets: [],
-});
+const mappingConfig = ref<MappingConfig>(defaultMappingConfig());
 const controllers = ref<Controller[]>([]);
 const selectedControllers = ref<Controller[]>([]);
 const status = ref("Looking for Nintendo HID devices…");
@@ -780,6 +806,7 @@ async function saveAnnotation() {
 
 onMounted(async () => {
   if (!isTauriDesktop) {
+    mappingConfig.value = defaultMappingConfig();
     await refreshControllers();
     return;
   }
