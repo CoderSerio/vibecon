@@ -1,7 +1,7 @@
 use hidapi::HidApi;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     fs::{self, OpenOptions},
     io::Write,
@@ -32,7 +32,8 @@ use tauri::Emitter;
 const NINTENDO_VENDOR_ID: u16 = 0x057e;
 const JOYCON_LEFT_PRODUCT_ID: u16 = 0x2006;
 const JOYCON_RIGHT_PRODUCT_ID: u16 = 0x2007;
-const WINDOW_SWITCH_TRIGGER_THRESHOLD: f32 = 0.60;
+const STICK_TRIGGER_THRESHOLD: f32 = 0.40;
+const MAPPING_COOLDOWN: Duration = Duration::from_millis(240);
 
 #[derive(Serialize)]
 struct ControllerDevice {
@@ -78,10 +79,19 @@ impl Default for StreamState {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct MappingRuntimeState {
-    window_switch_active: Arc<AtomicBool>,
-    focus_codex_active: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
+    config: Arc<Mutex<MappingConfig>>,
+}
+
+impl Default for MappingRuntimeState {
+    fn default() -> Self {
+        Self {
+            active: Arc::new(AtomicBool::new(false)),
+            config: Arc::new(Mutex::new(MappingConfig::default())),
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -125,11 +135,105 @@ struct Annotation {
     label: AnnotationLabel,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct MappingSettings {
     window_switch_enabled: bool,
     #[serde(default)]
     focus_codex_enabled: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MappingBinding {
+    id: String,
+    control: String,
+    action: String,
+    enabled: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MappingPreset {
+    id: String,
+    name: String,
+    enabled: bool,
+    bindings: Vec<MappingBinding>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MappingConfig {
+    version: u8,
+    active_preset_id: String,
+    presets: Vec<MappingPreset>,
+}
+
+impl MappingConfig {
+    fn active_preset(&self) -> Option<&MappingPreset> {
+        self.presets
+            .iter()
+            .find(|preset| preset.id == self.active_preset_id)
+    }
+}
+
+impl Default for MappingConfig {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            active_preset_id: "codex-cowork".to_owned(),
+            presets: vec![
+                MappingPreset {
+                    id: "code".to_owned(),
+                    name: "Code".to_owned(),
+                    enabled: true,
+                    bindings: vec![
+                        mapping_binding("window-previous", "joycon_left.stick_left", "window_previous"),
+                        mapping_binding("window-next", "joycon_left.stick_right", "window_next"),
+                    ],
+                },
+                MappingPreset {
+                    id: "codex-cowork".to_owned(),
+                    name: "Codex Cowork".to_owned(),
+                    enabled: true,
+                    bindings: vec![
+                        mapping_binding("window-previous", "joycon_left.stick_left", "window_previous"),
+                        mapping_binding("window-next", "joycon_left.stick_right", "window_next"),
+                        mapping_binding("focus-codex-left", "joycon_left.dpad_up", "focus_codex"),
+                        mapping_binding("focus-codex-right", "joycon_right.x", "focus_codex"),
+                    ],
+                },
+                MappingPreset {
+                    id: "inspect-only".to_owned(),
+                    name: "Inspect Only".to_owned(),
+                    enabled: false,
+                    bindings: vec![],
+                },
+            ],
+        }
+    }
+}
+
+fn mapping_binding(id: &str, control: &str, action: &str) -> MappingBinding {
+    MappingBinding {
+        id: id.to_owned(),
+        control: control.to_owned(),
+        action: action.to_owned(),
+        enabled: true,
+    }
+}
+
+struct BindingTriggerState {
+    armed: bool,
+    last_triggered_at: Instant,
+}
+
+impl Default for BindingTriggerState {
+    fn default() -> Self {
+        Self {
+            armed: true,
+            last_triggered_at: Instant::now() - Duration::from_secs(1),
+        }
+    }
 }
 
 impl Default for MappingSettings {
@@ -210,31 +314,19 @@ fn start_joycon_stream(
             // Keep the frontend responsive even when Bluetooth HID reports at
             // a much higher rate than the WebView can render.
             let mut last_emitted_at = Instant::now() - Duration::from_secs(1);
-            let mut window_switch_armed = true;
-            let mut last_window_switch_at = Instant::now() - Duration::from_secs(1);
-            let mut focus_codex_armed = true;
+            let mut binding_states = HashMap::<String, BindingTriggerState>::new();
             while stream_state.active_ids.lock().map(|ids| ids.contains(&id)).unwrap_or(false) {
                 let count = device
                     .read_timeout(&mut buffer, 8)
                     .map_err(|error| format!("Could not read Joy-Con input: {error}"))?;
                 if count > 0 && last_emitted_at.elapsed() >= Duration::from_millis(16) {
                     let report = report_from_bytes(buffer[..count].to_vec(), info.product_id());
-                    if info.product_id() == JOYCON_LEFT_PRODUCT_ID
-                        && mapping_state.window_switch_active.load(Ordering::Relaxed)
-                    {
-                        maybe_switch_window(
-                            report.left_stick.as_ref(),
-                            &mut window_switch_armed,
-                            &mut last_window_switch_at,
-                        );
-                    }
-                    if mapping_state.focus_codex_active.load(Ordering::Relaxed) {
-                        maybe_focus_codex(
-                            &report,
-                            info.product_id(),
-                            &mut focus_codex_armed,
-                        );
-                    }
+                    process_mapping_report(
+                        &report,
+                        info.product_id(),
+                        &mapping_state,
+                        &mut binding_states,
+                    );
                     let event = StreamEvent {
                         device_id: id.clone(),
                         report,
@@ -255,47 +347,121 @@ fn start_joycon_stream(
     Ok(())
 }
 
-fn maybe_focus_codex(report: &InputReport, product_id: u16, armed: &mut bool) {
-    let Some(buttons) = report.buttons else { return };
-    let pressed = match (report.report_id, product_id) {
-        // Native layout: byte 5 is L controls (D-pad up 0x02); byte 3 is R
-        // controls (X 0x02). We restrict the mapping to the matching device.
-        (0x30, JOYCON_LEFT_PRODUCT_ID) => buttons[2] & 0x02 != 0,
-        (0x30, JOYCON_RIGHT_PRODUCT_ID) => buttons[0] & 0x02 != 0,
-        (0x3f, JOYCON_LEFT_PRODUCT_ID) => buttons[0] & 0x04 != 0,
-        (0x3f, JOYCON_RIGHT_PRODUCT_ID) => buttons[0] & 0x02 != 0,
-        _ => false,
-    };
-    if !pressed {
-        *armed = true;
+fn process_mapping_report(
+    report: &InputReport,
+    product_id: u16,
+    mapping_state: &MappingRuntimeState,
+    binding_states: &mut HashMap<String, BindingTriggerState>,
+) {
+    if !mapping_state.active.load(Ordering::Relaxed) {
+        binding_states.clear();
         return;
     }
-    if *armed {
-        *armed = false;
-        let _ = focus_codex();
+    let config = match mapping_state.config.lock() {
+        Ok(config) => config.clone(),
+        Err(_) => return,
+    };
+    let Some(preset) = config.active_preset() else { return };
+    if !preset.enabled {
+        return;
+    }
+    for binding in preset.bindings.iter().filter(|binding| binding.enabled) {
+        let pressed = control_is_pressed(&binding.control, report, product_id);
+        let state = binding_states.entry(binding.id.clone()).or_default();
+        if !pressed {
+            state.armed = true;
+            continue;
+        }
+        if !state.armed || state.last_triggered_at.elapsed() < MAPPING_COOLDOWN {
+            continue;
+        }
+        state.armed = false;
+        state.last_triggered_at = Instant::now();
+        let _ = dispatch_mapping_action(&binding.action);
     }
 }
 
-fn maybe_switch_window(
-    stick: Option<&Stick>,
-    armed: &mut bool,
-    last_switch_at: &mut Instant,
-) {
-    let Some(stick) = stick else { return };
-    if stick.normalized_x.abs() < 0.35 {
-        *armed = true;
-        return;
+fn control_is_pressed(control: &str, report: &InputReport, product_id: u16) -> bool {
+    match control {
+        "joycon_left.stick_left" if product_id == JOYCON_LEFT_PRODUCT_ID => report
+            .left_stick
+            .as_ref()
+            .is_some_and(|stick| stick.normalized_x <= -STICK_TRIGGER_THRESHOLD),
+        "joycon_left.stick_right" if product_id == JOYCON_LEFT_PRODUCT_ID => report
+            .left_stick
+            .as_ref()
+            .is_some_and(|stick| stick.normalized_x >= STICK_TRIGGER_THRESHOLD),
+        _ => pressed_button_controls(report, product_id).iter().any(|target| *target == control),
     }
-    if !*armed
-        || stick.normalized_x.abs() < WINDOW_SWITCH_TRIGGER_THRESHOLD
-        || last_switch_at.elapsed() < Duration::from_millis(300)
-    {
-        return;
+}
+
+fn pressed_button_controls(report: &InputReport, product_id: u16) -> Vec<&'static str> {
+    let Some([buttons, extra, left]) = report.buttons else { return vec![] };
+    let mut controls = Vec::new();
+    let mut add_bits = |bits: u8, mappings: &[(&'static str, u8)]| {
+        controls.extend(
+            mappings
+                .iter()
+                .filter_map(|(name, mask)| (bits & mask != 0).then_some(*name)),
+        );
+    };
+    match (report.report_id, product_id) {
+        (0x30, JOYCON_LEFT_PRODUCT_ID) => {
+            add_bits(left, &[
+                ("joycon_left.dpad_down", 0x01), ("joycon_left.dpad_up", 0x02),
+                ("joycon_left.dpad_right", 0x04), ("joycon_left.dpad_left", 0x08),
+                ("joycon_left.sr", 0x10), ("joycon_left.sl", 0x20),
+                ("joycon_left.l", 0x40), ("joycon_left.zl", 0x80),
+            ]);
+            add_bits(extra, &[
+                ("joycon_left.minus", 0x01), ("joycon_left.stick_press", 0x04),
+                ("joycon_left.capture", 0x20),
+            ]);
+        }
+        (0x30, JOYCON_RIGHT_PRODUCT_ID) => {
+            add_bits(buttons, &[
+                ("joycon_right.y", 0x01), ("joycon_right.x", 0x02),
+                ("joycon_right.b", 0x04), ("joycon_right.a", 0x08),
+                ("joycon_right.sr", 0x10), ("joycon_right.sl", 0x20),
+                ("joycon_right.r", 0x40), ("joycon_right.zr", 0x80),
+            ]);
+            add_bits(extra, &[
+                ("joycon_right.plus", 0x02), ("joycon_right.stick_press", 0x08),
+                ("joycon_right.home", 0x10),
+            ]);
+        }
+        (0x3f, JOYCON_LEFT_PRODUCT_ID) => {
+            add_bits(buttons, &[
+                ("joycon_left.dpad_left", 0x01), ("joycon_left.dpad_down", 0x02),
+                ("joycon_left.dpad_up", 0x04), ("joycon_left.dpad_right", 0x08),
+                ("joycon_left.sl", 0x10), ("joycon_left.sr", 0x20),
+            ]);
+            add_bits(extra, &[
+                ("joycon_left.minus", 0x01), ("joycon_left.stick_press", 0x04),
+                ("joycon_left.capture", 0x20), ("joycon_left.l", 0x40),
+                ("joycon_left.zl", 0x80),
+            ]);
+        }
+        (0x3f, JOYCON_RIGHT_PRODUCT_ID) => {
+            add_bits(buttons, &[
+                ("joycon_right.y", 0x01), ("joycon_right.x", 0x02),
+                ("joycon_right.b", 0x04), ("joycon_right.a", 0x08),
+                ("joycon_right.sr", 0x10), ("joycon_right.sl", 0x20),
+                ("joycon_right.r", 0x40), ("joycon_right.zr", 0x80),
+            ]);
+        }
+        _ => {}
     }
-    *armed = false;
-    *last_switch_at = Instant::now();
-    let direction = if stick.normalized_x > 0.0 { "next" } else { "previous" };
-    let _ = switch_window(direction.to_owned());
+    controls
+}
+
+fn dispatch_mapping_action(action: &str) -> Result<(), String> {
+    match action {
+        "window_next" => switch_window("next".to_owned()),
+        "window_previous" => switch_window("previous".to_owned()),
+        "focus_codex" => focus_codex(),
+        _ => Err(format!("Unsupported mapping action: {action}")),
+    }
 }
 
 #[tauri::command]
@@ -306,13 +472,18 @@ fn stop_joycon_stream(state: tauri::State<StreamState>, id: Option<String>) {
 }
 
 #[tauri::command]
-fn set_window_switch_active(state: tauri::State<MappingRuntimeState>, active: bool) {
-    state.window_switch_active.store(active, Ordering::Relaxed);
-}
-
-#[tauri::command]
-fn set_focus_codex_active(state: tauri::State<MappingRuntimeState>, active: bool) {
-    state.focus_codex_active.store(active, Ordering::Relaxed);
+fn set_mapping_runtime(
+    state: tauri::State<MappingRuntimeState>,
+    config: MappingConfig,
+    active: bool,
+) -> Result<(), String> {
+    validate_mapping_config(&config)?;
+    *state
+        .config
+        .lock()
+        .map_err(|_| "Mapping runtime is unavailable")? = config;
+    state.active.store(active, Ordering::Relaxed);
+    Ok(())
 }
 
 fn focus_codex() -> Result<(), String> {
@@ -450,25 +621,117 @@ fn mapping_settings_path() -> Result<PathBuf, String> {
     vibecon_data_directory().map(|directory| directory.join("mapping-settings.json"))
 }
 
-#[tauri::command]
-fn load_mapping_settings() -> Result<MappingSettings, String> {
-    let path = mapping_settings_path()?;
-    if !path.exists() {
-        return Ok(MappingSettings::default());
+fn mapping_config_path() -> Result<PathBuf, String> {
+    vibecon_data_directory().map(|directory| directory.join("mappings.json"))
+}
+
+fn migrated_mapping_config(settings: MappingSettings) -> MappingConfig {
+    let mut config = MappingConfig::default();
+    let preset = config
+        .presets
+        .iter_mut()
+        .find(|preset| preset.id == "codex-cowork")
+        .expect("built-in Codex preset exists");
+    for binding in &mut preset.bindings {
+        binding.enabled = match binding.action.as_str() {
+            "focus_codex" => settings.focus_codex_enabled,
+            "window_next" | "window_previous" => settings.window_switch_enabled,
+            _ => false,
+        };
     }
-    let content = fs::read_to_string(&path)
-        .map_err(|error| format!("Could not read mapping settings: {error}"))?;
-    serde_json::from_str(&content)
-        .map_err(|error| format!("Invalid mapping settings in {}: {error}", path.display()))
+    preset.enabled = settings.window_switch_enabled || settings.focus_codex_enabled;
+    config
+}
+
+fn write_mapping_config(config: &MappingConfig) -> Result<(), String> {
+    validate_mapping_config(config)?;
+    let path = mapping_config_path()?;
+    let serialized = serde_json::to_string_pretty(config)
+        .map_err(|error| format!("Could not encode mapping configuration: {error}"))?;
+    fs::write(&path, format!("{serialized}\n"))
+        .map_err(|error| format!("Could not write mapping configuration: {error}"))
+}
+
+fn validate_mapping_config(config: &MappingConfig) -> Result<(), String> {
+    if config.version != 1 {
+        return Err("Unsupported mapping configuration version".to_owned());
+    }
+    if config.presets.is_empty() {
+        return Err("At least one mapping preset is required".to_owned());
+    }
+    if !config.presets.iter().any(|preset| preset.id == config.active_preset_id) {
+        return Err("The active mapping preset does not exist".to_owned());
+    }
+    let mut preset_ids = HashSet::new();
+    let mut binding_ids = HashSet::new();
+    for preset in &config.presets {
+        if preset.id.trim().is_empty() || !preset_ids.insert(&preset.id) {
+            return Err("Each mapping preset needs a unique non-empty id".to_owned());
+        }
+        for binding in &preset.bindings {
+            if binding.id.trim().is_empty() || !binding_ids.insert(format!("{}:{}", preset.id, binding.id)) {
+                return Err(format!("Preset {} has duplicate or empty binding ids", preset.id));
+            }
+            if !known_mapping_controls().contains(&binding.control.as_str()) {
+                return Err(format!("Unsupported mapping control: {}", binding.control));
+            }
+            if !known_mapping_actions().contains(&binding.action.as_str()) {
+                return Err(format!("Unsupported mapping action: {}", binding.action));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn known_mapping_controls() -> &'static [&'static str] {
+    &[
+        "joycon_left.stick_left", "joycon_left.stick_right",
+        "joycon_left.dpad_up", "joycon_left.dpad_down", "joycon_left.dpad_left", "joycon_left.dpad_right",
+        "joycon_left.stick_press", "joycon_left.minus", "joycon_left.capture", "joycon_left.sl", "joycon_left.sr", "joycon_left.l", "joycon_left.zl",
+        "joycon_right.x", "joycon_right.y", "joycon_right.a", "joycon_right.b",
+        "joycon_right.stick_press", "joycon_right.plus", "joycon_right.home", "joycon_right.sl", "joycon_right.sr", "joycon_right.r", "joycon_right.zr",
+    ]
+}
+
+fn known_mapping_actions() -> &'static [&'static str] {
+    &["window_previous", "window_next", "focus_codex"]
 }
 
 #[tauri::command]
-fn save_mapping_settings(settings: MappingSettings) -> Result<(), String> {
-    let path = mapping_settings_path()?;
-    let serialized = serde_json::to_string_pretty(&settings)
-        .map_err(|error| format!("Could not encode mapping settings: {error}"))?;
-    fs::write(&path, format!("{serialized}\n"))
-        .map_err(|error| format!("Could not write mapping settings: {error}"))
+fn load_mapping_config() -> Result<MappingConfig, String> {
+    let path = mapping_config_path()?;
+    if path.exists() {
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read mapping configuration: {error}"))?;
+        let config: MappingConfig = serde_json::from_str(&content)
+            .map_err(|error| format!("Invalid mapping configuration in {}: {error}", path.display()))?;
+        validate_mapping_config(&config)?;
+        return Ok(config);
+    }
+    let legacy_path = mapping_settings_path()?;
+    let config = if legacy_path.exists() {
+        let content = fs::read_to_string(&legacy_path)
+            .map_err(|error| format!("Could not read legacy mapping settings: {error}"))?;
+        migrated_mapping_config(serde_json::from_str(&content).map_err(|error| {
+            format!("Invalid legacy mapping settings in {}: {error}", legacy_path.display())
+        })?)
+    } else {
+        MappingConfig::default()
+    };
+    write_mapping_config(&config)?;
+    Ok(config)
+}
+
+#[tauri::command]
+fn save_mapping_config(config: MappingConfig) -> Result<(), String> {
+    write_mapping_config(&config)
+}
+
+#[tauri::command]
+fn reset_mapping_config() -> Result<MappingConfig, String> {
+    let config = MappingConfig::default();
+    write_mapping_config(&config)?;
+    Ok(config)
 }
 
 #[tauri::command]
@@ -593,13 +856,13 @@ pub fn run() {
             list_joycons,
             start_joycon_stream,
             stop_joycon_stream,
-            set_window_switch_active,
-            set_focus_codex_active,
+            set_mapping_runtime,
             switch_window,
             mapping_accessibility_status,
             open_accessibility_settings,
-            load_mapping_settings,
-            save_mapping_settings,
+            load_mapping_config,
+            save_mapping_config,
+            reset_mapping_config,
             load_annotations,
             save_annotation
         ])

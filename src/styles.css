@@ -354,7 +354,168 @@ p {
 .mapping-panel {
   display: grid;
   gap: 14px;
-  max-width: 620px;
+  max-width: 980px;
+}
+.preset-picker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+.preset-card {
+  display: grid;
+  gap: 5px;
+  min-height: 80px;
+  border: 1px solid #36534d;
+  border-radius: 12px;
+  padding: 13px;
+  color: #d7e4e0;
+  background: #15201e;
+  text-align: left;
+  cursor: pointer;
+}
+.preset-card:hover,
+.preset-card.selected {
+  border-color: #7de6c4;
+  background: linear-gradient(135deg, #254d44, #15201e);
+}
+.preset-card span {
+  color: #9faeac;
+  font-size: 12px;
+}
+.mapping-toolbar,
+.mapping-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mapping-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+.mapping-preset-title {
+  margin: 0 0 3px;
+  color: #ecf0f1;
+  font-weight: 700;
+}
+.switch-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #d7e4e0;
+  font-size: 13px;
+  cursor: pointer;
+}
+.switch-control input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.switch-track {
+  position: relative;
+  display: inline-block;
+  width: 42px;
+  height: 24px;
+  border: 1px solid #52756d;
+  border-radius: 999px;
+  background: #263532;
+  transition: background 120ms ease;
+}
+.switch-track::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  content: "";
+  background: #96aaa5;
+  transition: transform 120ms ease, background 120ms ease;
+}
+.switch-control input:checked + .switch-track {
+  border-color: #7de6c4;
+  background: #286452;
+}
+.switch-control input:checked + .switch-track::after {
+  transform: translateX(18px);
+  background: #e1fff5;
+}
+.switch-control input:focus-visible + .switch-track {
+  outline: 2px solid #c6fff1;
+  outline-offset: 3px;
+}
+.mapping-layout {
+  display: grid;
+  grid-template-columns: 185px minmax(320px, 1fr) 185px;
+  align-items: center;
+  gap: 22px;
+  min-height: 360px;
+  overflow: hidden;
+  border: 1px solid #28453e;
+  border-radius: 16px;
+  padding: 8px 14px;
+  background: radial-gradient(circle at center, #19312c, #111b19 66%);
+}
+.mapping-layout > .joycon {
+  transform: scale(0.7);
+  transform-origin: center;
+}
+.mapping-layout .control,
+.mapping-layout .stick {
+  pointer-events: none;
+}
+.mapping-layout .preview-active {
+  border-color: #ebffff;
+  background: #c6fff1;
+  box-shadow: 0 0 0 4px rgba(129, 255, 218, 0.42), 0 0 22px rgba(129, 255, 218, 0.9), inset 0 1px #fff;
+}
+.mapping-layout .stick.preview-active {
+  border-color: #d7fff3;
+  box-shadow: 0 0 0 5px rgba(129, 255, 218, 0.35), inset 0 5px 9px rgba(0, 35, 62, 0.65), 0 0 24px rgba(129, 255, 218, 0.72);
+}
+.binding-list {
+  display: grid;
+  gap: 9px;
+}
+.binding-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #3a5952;
+  border-radius: 10px;
+  padding: 11px 12px;
+  background: rgba(9, 18, 16, 0.66);
+}
+.binding-control {
+  margin: 0 0 4px;
+  color: #c4f8ea;
+  font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.binding-action {
+  margin: 0;
+  color: #aabbb7;
+  font-size: 12px;
+}
+.switch-control.compact .switch-track {
+  width: 36px;
+  height: 21px;
+}
+.switch-control.compact .switch-track::after {
+  width: 13px;
+  height: 13px;
+}
+.switch-control.compact input:checked + .switch-track::after {
+  transform: translateX(15px);
+}
+.empty-preset {
+  margin: 0;
+  border: 1px dashed #46665e;
+  border-radius: 12px;
+  padding: 24px;
+  color: #aabbb7;
+  text-align: center;
 }
 .mapping-toggle {
   display: flex;
@@ -785,6 +946,17 @@ select {
   color: #102e28;
 }
 @media (max-width: 720px) {
+  .preset-picker {
+    grid-template-columns: 1fr;
+  }
+  .mapping-layout {
+    grid-template-columns: 1fr;
+    min-height: auto;
+    padding: 18px;
+  }
+  .mapping-layout > .joycon {
+    display: none;
+  }
   .log-actions {
     align-items: flex-end;
     flex-direction: column;

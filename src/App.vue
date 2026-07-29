@@ -43,15 +43,31 @@ type Annotation = {
   label: Label;
 };
 type StreamEvent = { device_id: string; report: InputReport };
-type MappingSettings = {
-  window_switch_enabled: boolean;
-  focus_codex_enabled: boolean;
+type MappingBinding = {
+  id: string;
+  control: string;
+  action: "window_previous" | "window_next" | "focus_codex";
+  enabled: boolean;
+};
+type MappingPreset = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  bindings: MappingBinding[];
+};
+type MappingConfig = {
+  version: number;
+  activePresetId: string;
+  presets: MappingPreset[];
 };
 
 const isTauriDesktop = "__TAURI_INTERNALS__" in window;
 const activePage = ref<"debug" | "mappings">("debug");
-const windowSwitchEnabled = ref(false);
-const focusCodexEnabled = ref(false);
+const mappingConfig = ref<MappingConfig>({
+  version: 1,
+  activePresetId: "codex-cowork",
+  presets: [],
+});
 const controllers = ref<Controller[]>([]);
 const selectedControllers = ref<Controller[]>([]);
 const status = ref("Looking for Nintendo HID devices…");
@@ -77,13 +93,20 @@ const mappingInputStatus = computed(() => {
     return "No Joy-Con (L) selected. Open Debug, refresh controllers, then select Joy-Con (L).";
   return `${leftController.name} is selected. Debug visualization and logging are paused here.`;
 });
+const activePreset = computed(() =>
+  mappingConfig.value.presets.find(
+    ({ id }) => id === mappingConfig.value.activePresetId,
+  ),
+);
 const recentControls = ref<string[]>([]);
 const buttonsReadout = ref("D-pad 00 · waiting for input");
 const dialog = ref<HTMLDialogElement>();
 const selectedLog = ref<LogEntry>();
 const annotationKind = ref<"stick" | "button">("stick");
 const annotationTarget = ref<string>();
-const mappingFeedback = ref("Enable the mapping, then return the stick to center before each trigger.");
+const mappingFeedback = ref(
+  "Choose a preset, enable it, then return the stick to center before each trigger.",
+);
 const accessibilityGranted = ref(false);
 const buttonPhase = ref<"pressed" | "released">("pressed");
 const stickPhase = ref<"moved" | "reset">("moved");
@@ -97,37 +120,16 @@ let recentControlsTimer: ReturnType<typeof setTimeout> | undefined;
 
 watch(activePage, (page) => {
   if (page === "mappings") void checkMappingAccessibility();
+  void syncMappingRuntime();
 });
-watch(windowSwitchEnabled, (window_switch_enabled) => {
-  if (!isTauriDesktop) return;
-  void invoke("save_mapping_settings", {
-    settings: {
-      window_switch_enabled,
-      focus_codex_enabled: focusCodexEnabled.value,
-    },
-  }).catch(showError);
-});
-watch(focusCodexEnabled, (focus_codex_enabled) => {
-  if (!isTauriDesktop) return;
-  void invoke("save_mapping_settings", {
-    settings: {
-      window_switch_enabled: windowSwitchEnabled.value,
-      focus_codex_enabled,
-    },
-  }).catch(showError);
-});
-watch([activePage, windowSwitchEnabled], () => {
-  if (!isTauriDesktop) return;
-  void invoke("set_window_switch_active", {
-    active: activePage.value === "mappings" && windowSwitchEnabled.value,
-  }).catch(showError);
-});
-watch([activePage, focusCodexEnabled], () => {
-  if (!isTauriDesktop) return;
-  void invoke("set_focus_codex_active", {
-    active: activePage.value === "mappings" && focusCodexEnabled.value,
-  }).catch(showError);
-});
+watch(
+  mappingConfig,
+  () => {
+    if (!isTauriDesktop || !mappingConfig.value.presets.length) return;
+    void persistMappingConfig();
+  },
+  { deep: true },
+);
 
 const stickTargets = [
   "center",
@@ -578,6 +580,70 @@ function testWindowSwitch() {
       showError(error);
     });
 }
+async function syncMappingRuntime() {
+  if (!isTauriDesktop || !mappingConfig.value.presets.length) return;
+  try {
+    await invoke("set_mapping_runtime", {
+      config: mappingConfig.value,
+      active: activePage.value === "mappings",
+    });
+  } catch (error) {
+    showError(error);
+  }
+}
+async function persistMappingConfig() {
+  try {
+    await invoke("save_mapping_config", { config: mappingConfig.value });
+    await syncMappingRuntime();
+  } catch (error) {
+    showError(error);
+  }
+}
+function selectPreset(id: string) {
+  mappingConfig.value.activePresetId = id;
+}
+function resetMappingConfig() {
+  void invoke<MappingConfig>("reset_mapping_config")
+    .then((config) => {
+      mappingConfig.value = config;
+      mappingFeedback.value = "Restored the built-in Code, Codex Cowork, and Inspect Only presets.";
+    })
+    .catch(showError);
+}
+function controlName(control: string) {
+  const names: Record<string, string> = {
+    "joycon_left.stick_left": "L stick ←",
+    "joycon_left.stick_right": "L stick →",
+    "joycon_left.dpad_up": "L D-pad ↑",
+    "joycon_left.dpad_down": "L D-pad ↓",
+    "joycon_left.dpad_left": "L D-pad ←",
+    "joycon_left.dpad_right": "L D-pad →",
+    "joycon_right.x": "R X",
+    "joycon_right.y": "R Y",
+    "joycon_right.a": "R A",
+    "joycon_right.b": "R B",
+  };
+  return names[control] ?? control.replace("joycon_", "").replace(".", " · ");
+}
+function actionName(action: MappingBinding["action"]) {
+  return {
+    window_previous: "Previous window · Cmd + Shift + Tab",
+    window_next: "Next window · Cmd + Tab",
+    focus_codex: "Focus Codex",
+  }[action];
+}
+function controlPreviewTarget(control: string) {
+  return control.replace(/\.stick_(left|right)$/, ".stick_press");
+}
+async function copyAgentPrompt() {
+  const prompt = `You are editing VibeCon's mapping configuration. Read ~/.vibecon/mappings.json and keep version 1. You may only use the existing controls and safe actions: window_previous, window_next, focus_codex. Preserve valid JSON, unique preset and binding ids, then explain the change. Do not add shell commands or arbitrary automation.`;
+  try {
+    await navigator.clipboard.writeText(prompt);
+    mappingFeedback.value = "Agent prompt copied. Paste it into your coding agent with ~/.vibecon/mappings.json.";
+  } catch (error) {
+    mappingFeedback.value = `Could not copy the agent prompt: ${String(error)}`;
+  }
+}
 function setActiveControls(next: string[], side: "left" | "right") {
   const newlyPressed = next.filter(
     (target) => !activeControlsBySide.value[side].includes(target),
@@ -713,14 +779,14 @@ onMounted(async () => {
       return [];
     },
   );
-  const mappingSettings = await invoke<MappingSettings>("load_mapping_settings").catch(
+  const loadedMappingConfig = await invoke<MappingConfig>("load_mapping_config").catch(
     (error) => {
       showError(error);
-      return { window_switch_enabled: false, focus_codex_enabled: false };
+      return mappingConfig.value;
     },
   );
-  windowSwitchEnabled.value = mappingSettings.window_switch_enabled;
-  focusCodexEnabled.value = mappingSettings.focus_codex_enabled;
+  mappingConfig.value = loadedMappingConfig;
+  await syncMappingRuntime();
   unlistenInput = await listen<StreamEvent>("joycon-input", ({ payload }) => {
     const controller = selectedControllers.value.find(
       ({ id }) => id === payload.device_id,
@@ -774,29 +840,63 @@ onBeforeUnmount(() => {
       </button>
     </nav>
     <section v-if="activePage === 'mappings'" class="panel mapping-panel">
-      <h2 class="section-title">Window switching</h2>
-      <p class="hint">
-        Move the left stick firmly left or right to switch macOS windows.
-      </p>
-      <p class="mapping-input-status">{{ mappingInputStatus }}</p>
-      <label class="mapping-toggle"
-        ><input v-model="windowSwitchEnabled" type="checkbox" /> Enable Cmd+Tab
-        mapping</label
-      >
-      <label class="mapping-toggle"
-        ><input v-model="focusCodexEnabled" type="checkbox" /> Focus Codex
-        with L D-pad Up / R X</label
-      >
-      <button class="app-button mapping-test" @click="testWindowSwitch">
-        Test Cmd+Tab now
-      </button>
-      <button
-        v-if="!accessibilityGranted"
-        class="app-button mapping-test"
-        @click="openAccessibilitySettings"
-      >
-        Open Accessibility settings
-      </button>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">PRESET LIBRARY</p>
+          <h2 class="section-title">Controller mappings</h2>
+          <p class="hint">A preset is runnable only on this page. Debug always pauses automation.</p>
+        </div>
+        <button class="secondary" @click="copyAgentPrompt">Copy Agent Prompt</button>
+      </div>
+      <div class="preset-picker" role="tablist" aria-label="Mapping presets">
+        <button
+          v-for="preset in mappingConfig.presets"
+          :key="preset.id"
+          class="preset-card"
+          :class="{ selected: preset.id === mappingConfig.activePresetId }"
+          role="tab"
+          :aria-selected="preset.id === mappingConfig.activePresetId"
+          @click="selectPreset(preset.id)"
+        >
+          <strong>{{ preset.name }}</strong>
+          <span>{{ preset.bindings.length ? `${preset.bindings.length} bindings` : "No automation" }}</span>
+        </button>
+      </div>
+      <template v-if="activePreset">
+        <div class="mapping-toolbar">
+          <div>
+            <p class="mapping-preset-title">{{ activePreset.name }}</p>
+            <p class="mapping-input-status">{{ mappingInputStatus }}</p>
+          </div>
+          <label class="switch-control">
+            <input v-model="activePreset.enabled" type="checkbox" />
+            <span class="switch-track" aria-hidden="true"></span>
+            <span>{{ activePreset.enabled ? "Enabled" : "Disabled" }}</span>
+          </label>
+        </div>
+        <div v-if="activePreset.bindings.length" class="mapping-layout">
+          <JoyCon side="left" :preview-target="previewTarget" />
+          <div class="binding-list">
+            <article v-for="binding in activePreset.bindings" :key="binding.id" class="binding-card">
+              <div>
+                <p class="binding-control">{{ controlName(binding.control) }}</p>
+                <p class="binding-action">{{ actionName(binding.action) }}</p>
+              </div>
+              <label class="switch-control compact" @mouseenter="previewTarget = controlPreviewTarget(binding.control)" @mouseleave="previewTarget = undefined">
+                <input v-model="binding.enabled" type="checkbox" />
+                <span class="switch-track" aria-hidden="true"></span>
+              </label>
+            </article>
+          </div>
+          <JoyCon side="right" :preview-target="previewTarget" />
+        </div>
+        <p v-else class="empty-preset">Inspect Only intentionally sends no actions to macOS.</p>
+      </template>
+      <div class="mapping-actions">
+        <button class="app-button mapping-test" @click="testWindowSwitch">Test Cmd+Tab</button>
+        <button v-if="!accessibilityGranted" class="app-button mapping-test" @click="openAccessibilitySettings">Open Accessibility settings</button>
+        <button class="secondary" @click="resetMappingConfig">Reset defaults</button>
+      </div>
       <p class="mapping-feedback">{{ mappingFeedback }}</p>
     </section>
     <section v-show="activePage === 'debug'" class="panel">
