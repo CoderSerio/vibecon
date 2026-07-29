@@ -1,0 +1,28 @@
+[branches]
+base = "main"
+release = "release"
+
+[tags]
+feat = "New Features"
+fix = "Bug Fixes"
+docs = "Documentation"
+refactor = "Refactors"
+
+# VibeCon is a desktop application, not a package registry release. Semifold
+# tracks the Node and Rust manifests together; `scripts/sync-tauri-version.mjs`
+# is the explicit final step that keeps Tauri's bundle manifest aligned.
+[packages.vibecon-web]
+path = "."
+resolver = "nodejs"
+
+[packages.vibecon-desktop]
+path = "src-tauri"
+resolver = "rust"
+
+[resolver.nodejs]
+pre-check.url = "https://registry.npmjs.org/{{ package.name }}/{{ package.version }}"
+publish = []
+
+[resolver.rust]
+pre-check.url = "https://crates.io/api/v1/crates/{{ package.name }}/{{ package.version }}"
+publish = []
