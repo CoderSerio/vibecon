@@ -59,6 +59,7 @@ VibeCon 从一个很朴素的想法开始：与其买一个昂贵又封闭的「
 - 日志策略可选：关键操作、旧版 75ms 快照、60/30/10 Hz 采样或每一条 report；也可以随时清空当前可见日志。
 - 对抓到的 report 打标：摇杆点位或按键按下/抬起。数据只保存在 `~/.vibecon/annotations.jsonl`，再次命中时会回显标签。
 - **基于预设的 macOS 映射：** 可选择 **Code**、**Codex Cowork**、**Inspect Only**，或需要显式开启的 **Keyboard Focus** 实验。前两个预设可用左摇杆向右/向左切换下一个/上一个 `Cmd+Tab` 窗口，并用 Joy-Con (L) 的方向上或 Joy-Con (R) 的 X 聚焦 Codex。Keyboard Focus 会向前台应用发送 Tab / Shift+Tab / Space。每个预设和绑定都需要显式开启，保存在 `~/.vibecon/mappings.json`，并在 Debug 页面临时失效，避免干扰抓包。
+- **实验性 Joy-Con 输出：** Mappings 页面提供一个手动、短促的 **测试已选 Joy-Con 震动** 脉冲。它不会被绑定或任务事件自动触发；任何 HID 写入失败都会显示出来且不会重试。
 
 ### 已观测到的 Joy-Con 规律
 

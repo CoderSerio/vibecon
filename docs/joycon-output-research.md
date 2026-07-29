@@ -22,20 +22,31 @@ the input decoder.
   The public encoding notes and capture are in
   [Nintendo_Switch_Reverse_Engineering](https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering).
 
+## First controlled implementation
+
+VibeCon now has an explicit **Test selected Joy-Con vibration** button on the
+Mappings page. It is not automatic and does not run from a controller binding.
+For each Joy-Con selected in Debug, it sends:
+
+1. `0x01` with subcommand `0x48 0x01` to enable rumble;
+2. one 70 ms low-intensity `0x10` rumble pulse;
+3. an unconditional neutral `0x10` frame afterwards, even when the pulse write
+   returns an error.
+
+The HID reader and writer share one handle with a short mutex hold per I/O call,
+so the test does not hold the reader lock while waiting for the pulse duration.
+
 ## What is deliberately not claimed
 
 VibeCon has observed macOS compact `0x3F` input reports, but has **not** shown
 that the same HID endpoint accepts Joy-Con Bluetooth output report `0x10`.
 Some macOS HID paths expose an input-only interface or alter the report routing.
-Therefore no rumble packet is emitted by the app yet.
+The test is opt-in precisely because macOS output compatibility must be checked
+on real hardware. A write failure is surfaced in the UI and is never retried.
 
 ## Next controlled experiment
 
-1. Add a hidden/manual native command that opens a selected Joy-Con by its
-   exact HID path and sends only one known, low-amplitude `0x10` pulse followed
-   immediately by the neutral packet.
-2. Log the `write()` byte count and OS error without retrying automatically.
-3. Test independently for Joy-Con (L), Joy-Con (R), single and paired states.
-4. Only after that succeeds, expose a visible **Test vibration** control.
-5. Task-completion haptics come last: they require both a verified output path
+1. Test independently for Joy-Con (L), Joy-Con (R), single and paired states.
+2. Record the exact macOS output error, if any, before changing the pulse.
+3. Task-completion haptics come last: they require both a verified output path
    and a trustworthy explicit completion event source from Codex/CLI.

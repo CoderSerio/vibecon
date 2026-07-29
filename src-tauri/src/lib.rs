@@ -7,7 +7,7 @@ use std::{
     io::Write,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -69,12 +69,16 @@ struct StreamEvent {
 #[derive(Clone)]
 struct StreamState {
     active_ids: Arc<Mutex<HashSet<String>>>,
+    devices: Arc<Mutex<HashMap<String, Arc<Mutex<hidapi::HidDevice>>>>>,
+    output_packet_counter: Arc<AtomicU8>,
 }
 
 impl Default for StreamState {
     fn default() -> Self {
         Self {
             active_ids: Arc::new(Mutex::new(HashSet::new())),
+            devices: Arc::new(Mutex::new(HashMap::new())),
+            output_packet_counter: Arc::new(AtomicU8::new(0)),
         }
     }
 }
@@ -317,9 +321,14 @@ fn start_joycon_stream(
                 .device_list()
                 .find(|device| device.path().to_string_lossy() == id)
                 .ok_or("The selected Joy-Con is no longer connected")?;
-            let device = info
+            let device = Arc::new(Mutex::new(info
                 .open_device(&api)
-                .map_err(|error| format!("Could not open Joy-Con input: {error}"))?;
+                .map_err(|error| format!("Could not open Joy-Con input: {error}"))?));
+            stream_state
+                .devices
+                .lock()
+                .map_err(|_| "Joy-Con output state is unavailable")?
+                .insert(id.clone(), device.clone());
             let mut buffer = [0_u8; 64];
             // Keep the frontend responsive even when Bluetooth HID reports at
             // a much higher rate than the WebView can render.
@@ -327,6 +336,8 @@ fn start_joycon_stream(
             let mut binding_states = HashMap::<String, BindingTriggerState>::new();
             while stream_state.active_ids.lock().map(|ids| ids.contains(&id)).unwrap_or(false) {
                 let count = device
+                    .lock()
+                    .map_err(|_| "Joy-Con device handle is unavailable")?
                     .read_timeout(&mut buffer, 8)
                     .map_err(|error| format!("Could not read Joy-Con input: {error}"))?;
                 if count > 0 && last_emitted_at.elapsed() >= Duration::from_millis(16) {
@@ -352,6 +363,9 @@ fn start_joycon_stream(
         }
         if let Ok(mut ids) = stream_state.active_ids.lock() {
             ids.remove(&id);
+        }
+        if let Ok(mut devices) = stream_state.devices.lock() {
+            devices.remove(&id);
         }
     });
     Ok(())
@@ -480,7 +494,17 @@ fn dispatch_mapping_action(action: &str) -> Result<(), String> {
 #[tauri::command]
 fn stop_joycon_stream(state: tauri::State<StreamState>, id: Option<String>) {
     if let Ok(mut ids) = state.active_ids.lock() {
-        if let Some(id) = id { ids.remove(&id); } else { ids.clear(); }
+        if let Some(id) = id {
+            ids.remove(&id);
+            if let Ok(mut devices) = state.devices.lock() {
+                devices.remove(&id);
+            }
+        } else {
+            ids.clear();
+            if let Ok(mut devices) = state.devices.lock() {
+                devices.clear();
+            }
+        }
     }
 }
 
@@ -551,6 +575,74 @@ fn switch_window(direction: String) -> Result<(), String> {
         let _ = direction;
         Err("Window switching is not implemented for this platform yet".to_owned())
     }
+}
+
+const NEUTRAL_RUMBLE_FRAME: [u8; 4] = [0x00, 0x01, 0x40, 0x40];
+const GENTLE_RUMBLE_FRAME: [u8; 4] = [0x00, 0x58, 0xC0, 0x59];
+
+fn next_output_packet_counter(state: &StreamState) -> u8 {
+    state.output_packet_counter.fetch_add(1, Ordering::Relaxed) & 0x0f
+}
+
+fn rumble_subcommand(counter: u8, subcommand: u8, data: u8) -> [u8; 12] {
+    [
+        0x01,
+        counter & 0x0f,
+        NEUTRAL_RUMBLE_FRAME[0],
+        NEUTRAL_RUMBLE_FRAME[1],
+        NEUTRAL_RUMBLE_FRAME[2],
+        NEUTRAL_RUMBLE_FRAME[3],
+        NEUTRAL_RUMBLE_FRAME[0],
+        NEUTRAL_RUMBLE_FRAME[1],
+        NEUTRAL_RUMBLE_FRAME[2],
+        NEUTRAL_RUMBLE_FRAME[3],
+        subcommand,
+        data,
+    ]
+}
+
+fn rumble_report(counter: u8, frame: [u8; 4]) -> [u8; 10] {
+    [
+        0x10, counter & 0x0f, frame[0], frame[1], frame[2], frame[3], frame[0], frame[1],
+        frame[2], frame[3],
+    ]
+}
+
+fn write_joycon_output(device: &Arc<Mutex<hidapi::HidDevice>>, bytes: &[u8]) -> Result<(), String> {
+    device
+        .lock()
+        .map_err(|_| "Joy-Con device handle is unavailable")?
+        .write(bytes)
+        .map(|_| ())
+        .map_err(|error| format!("Could not write Joy-Con output report: {error}"))
+}
+
+/// Send one deliberately short and gentle vibration pulse. This is only a
+/// manual experiment: callers must have already selected and opened the exact
+/// Joy-Con. Every path attempts the neutral frame after the pulse.
+#[tauri::command]
+fn test_joycon_vibration(state: tauri::State<StreamState>, id: String) -> Result<(), String> {
+    let device = state
+        .devices
+        .lock()
+        .map_err(|_| "Joy-Con output state is unavailable")?
+        .get(&id)
+        .cloned()
+        .ok_or("Select this Joy-Con in Debug before testing vibration")?;
+    let enable = rumble_subcommand(next_output_packet_counter(state.inner()), 0x48, 0x01);
+    let pulse = rumble_report(next_output_packet_counter(state.inner()), GENTLE_RUMBLE_FRAME);
+    let neutral = rumble_report(next_output_packet_counter(state.inner()), NEUTRAL_RUMBLE_FRAME);
+    write_joycon_output(&device, &enable)
+        .map_err(|error| format!("Could not enable Joy-Con rumble: {error}"))?;
+    thread::sleep(Duration::from_millis(120));
+    let pulse_result = write_joycon_output(&device, &pulse)
+        .map_err(|error| format!("Could not send Joy-Con rumble pulse: {error}"));
+    thread::sleep(Duration::from_millis(70));
+    let neutral_result = write_joycon_output(&device, &neutral)
+        .map_err(|error| format!("Could not stop Joy-Con rumble: {error}"));
+    pulse_result?;
+    neutral_result?;
+    Ok(())
 }
 
 /// A deliberately small accessibility-navigation primitive. It does not read
@@ -931,6 +1023,7 @@ pub fn run() {
             stop_joycon_stream,
             set_mapping_runtime,
             switch_window,
+            test_joycon_vibration,
             mapping_accessibility_status,
             open_accessibility_settings,
             load_mapping_config,
@@ -968,5 +1061,23 @@ mod tests {
         assert!(validate_mapping_config(&config)
             .unwrap_err()
             .contains("Unsupported mapping control"));
+    }
+
+    #[test]
+    fn rumble_report_uses_a_masked_counter_and_both_frames() {
+        let frame = [0x11, 0x22, 0x33, 0x44];
+        assert_eq!(
+            rumble_report(0xa3, frame),
+            [0x10, 0x03, 0x11, 0x22, 0x33, 0x44, 0x11, 0x22, 0x33, 0x44]
+        );
+    }
+
+    #[test]
+    fn rumble_enable_subcommand_has_neutral_frames() {
+        let report = rumble_subcommand(0x1f, 0x48, 0x01);
+        assert_eq!(report[0], 0x01);
+        assert_eq!(report[1], 0x0f);
+        assert_eq!(&report[2..10], &[0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40]);
+        assert_eq!(&report[10..], &[0x48, 0x01]);
     }
 }

@@ -59,6 +59,7 @@ Before it automates anything, VibeCon makes the controller observable: raw HID r
 - Choose a log policy: key operations, legacy 75 ms snapshots, 60/30/10 Hz samples, or every report; clear the visible log whenever needed.
 - Label captured reports as stick positions or button press/release samples. Labels are stored locally in `~/.vibecon/annotations.jsonl` and shown again for matching reports.
 - **Preset-based macOS mappings:** choose **Code**, **Codex Cowork**, **Inspect Only**, or the opt-in **Keyboard Focus** experiment. The first two can switch windows with left-stick right/left and focus Codex with Joy-Con (L) D-pad Up / Joy-Con (R) X. Keyboard Focus sends Tab / Shift+Tab / Space to the foreground app. Every preset and binding is opt-in, stored in `~/.vibecon/mappings.json`, and inactive on the Debug page.
+- **Experimental Joy-Con output:** a manual, short **Test selected Joy-Con vibration** pulse is available on Mappings. It is never triggered from a binding or task event, and any HID write failure is shown instead of retried.
 
 ### Observed Joy-Con notes
 

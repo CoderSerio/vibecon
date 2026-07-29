@@ -631,6 +631,27 @@ function testWindowSwitch() {
       showError(error);
     });
 }
+function testJoyConVibration() {
+  if (!selectedControllers.value.length) {
+    mappingFeedback.value = t("mapping.vibrationNoController");
+    return;
+  }
+  mappingFeedback.value = t("mapping.vibrationSending");
+  void Promise.all(
+    selectedControllers.value.map(({ id }) =>
+      invoke("test_joycon_vibration", { id }),
+    ),
+  )
+    .then(() => {
+      mappingFeedback.value = t("mapping.vibrationSent", {
+        count: selectedControllers.value.length,
+      });
+    })
+    .catch((error) => {
+      mappingFeedback.value = `Vibration test failed: ${String(error)}`;
+      showError(error);
+    });
+}
 async function syncMappingRuntime() {
   if (!isTauriDesktop || !mappingConfig.value.presets.length) return;
   try {
@@ -956,6 +977,7 @@ onBeforeUnmount(() => {
       </template>
       <div class="mapping-actions">
         <button class="app-button mapping-test" @click="testWindowSwitch">{{ t("mapping.test") }}</button>
+        <button class="app-button mapping-test" @click="testJoyConVibration">{{ t("mapping.testVibration") }}</button>
         <button v-if="!accessibilityGranted" class="app-button mapping-test" @click="openAccessibilitySettings">{{ t("mapping.openAccessibility") }}</button>
         <button class="secondary" @click="resetMappingConfig">{{ t("mapping.reset") }}</button>
       </div>
