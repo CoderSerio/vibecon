@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import JoyCon from "./components/JoyCon.vue";
-import type { AppLocale } from "./i18n";
+import { isAppLocale, LOCALE_STORAGE_KEY, type AppLocale } from "./i18n";
 
 type Controller = {
   id: string;
@@ -678,7 +678,9 @@ async function copyAgentPrompt() {
   }
 }
 function setLocale(next: string) {
-  if (next === "en" || next === "zh-CN") locale.value = next as AppLocale;
+  if (!isAppLocale(next)) return;
+  locale.value = next as AppLocale;
+  localStorage.setItem(LOCALE_STORAGE_KEY, next);
 }
 function setActiveControls(next: string[], side: "left" | "right") {
   const newlyPressed = next.filter(

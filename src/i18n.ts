@@ -136,8 +136,15 @@ const messages = {
 } as const;
 
 export type AppLocale = keyof typeof messages;
+export const LOCALE_STORAGE_KEY = "vibecon.locale";
+
+export function isAppLocale(value: string | null): value is AppLocale {
+  return value === "en" || value === "zh-CN";
+}
 
 function initialLocale(): AppLocale {
+  const saved = localStorage.getItem(LOCALE_STORAGE_KEY);
+  if (isAppLocale(saved)) return saved;
   return navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
 }
 
