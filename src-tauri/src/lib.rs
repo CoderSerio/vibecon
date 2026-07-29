@@ -869,3 +869,31 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running VibeCon");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn built_in_mapping_config_is_valid() {
+        assert!(validate_mapping_config(&MappingConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn mapping_config_rejects_unknown_automation() {
+        let mut config = MappingConfig::default();
+        config.presets[0].bindings[0].action = "run_shell_command".to_owned();
+        assert!(validate_mapping_config(&config)
+            .unwrap_err()
+            .contains("Unsupported mapping action"));
+    }
+
+    #[test]
+    fn mapping_config_rejects_unknown_controls() {
+        let mut config = MappingConfig::default();
+        config.presets[0].bindings[0].control = "joycon_left.magic_button".to_owned();
+        assert!(validate_mapping_config(&config)
+            .unwrap_err()
+            .contains("Unsupported mapping control"));
+    }
+}
