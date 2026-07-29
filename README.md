@@ -58,7 +58,7 @@ Before it automates anything, VibeCon makes the controller observable: raw HID r
 - Visualize both Joy-Cons in CSS: sticks move live; held controls glow and taps briefly persist as afterglow.
 - Choose a log policy: key operations, legacy 75 ms snapshots, 60/30/10 Hz samples, or every report; clear the visible log whenever needed.
 - Label captured reports as stick positions or button press/release samples. Labels are stored locally in `~/.vibecon/annotations.jsonl` and shown again for matching reports.
-- **Experimental macOS mappings:** push the left stick right/left for next/previous `Cmd+Tab`, or focus Codex with Joy-Con (L) D-pad Up / Joy-Con (R) X. Each mapping is opt-in, persisted in `~/.vibecon/mapping-settings.json`, and inactive on the Debug page.
+- **Preset-based macOS mappings:** choose **Code**, **Codex Cowork**, or **Inspect Only**. The first two can switch windows with left-stick right/left and focus Codex with Joy-Con (L) D-pad Up / Joy-Con (R) X. Every preset and binding is opt-in, stored in `~/.vibecon/mappings.json`, and inactive on the Debug page.
 
 ### Observed Joy-Con notes
 
@@ -83,10 +83,14 @@ Pair a Joy-Con from **System Settings → Bluetooth** first. In VibeCon, click *
 ## Configure macOS mappings
 
 1. On **Debug**, select the controller you want to use. Select both Joy-Cons if you want both Codex-focus shortcuts.
-2. Open **Mappings** and enable the mapping you want. Debug rendering and logging pause while this page is active, but the HID reader remains active for mappings.
+2. Open **Mappings**, choose a preset, then enable its master switch and any bindings you want. **Code** offers window navigation; **Codex Cowork** adds the two Codex-focus buttons; **Inspect Only** deliberately sends no macOS actions. Debug rendering and logging pause while this page is active, but the HID reader remains active for mappings.
 3. For window switching, grant **Accessibility** to VibeCon. The Mappings page can open the exact System Settings pane if it is missing.
 
 Window switching posts a native macOS Quartz shortcut, so **Accessibility** is the only permission it requires. Focusing Codex uses the macOS application launcher and does not require Accessibility.
+
+### Edit a preset with an agent
+
+Mappings are readable JSON at `~/.vibecon/mappings.json`. The **Copy Agent Prompt** button gives a coding agent the schema and safety boundary. VibeCon accepts only its known Joy-Con controls and these safe actions: `window_previous`, `window_next`, and `focus_codex`; it never runs arbitrary shell commands from a mapping file. **Reset defaults** restores the three built-in presets.
 
 ## Development
 
