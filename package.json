@@ -13,6 +13,7 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "vue": "^3.5.40",
+    "vue-i18n": "^11.4.8",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {

@@ -19,6 +19,28 @@ h2,
 p {
   margin: 0;
 }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.language-picker select {
+  min-height: 34px;
+  border: 1px solid #46665e;
+  border-radius: 7px;
+  padding: 0 8px;
+  color: #d7e4e0;
+  background: #182522;
+  font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 .joycon {
   position: relative;
   width: 184px;

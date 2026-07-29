@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import JoyCon from "./components/JoyCon.vue";
+import type { AppLocale } from "./i18n";
 
 type Controller = {
   id: string;
@@ -62,6 +64,7 @@ type MappingConfig = {
 };
 
 const isTauriDesktop = "__TAURI_INTERNALS__" in window;
+const { t, locale } = useI18n();
 const activePage = ref<"debug" | "mappings">("debug");
 const mappingConfig = ref<MappingConfig>({
   version: 1,
@@ -90,8 +93,8 @@ const mappingInputStatus = computed(() => {
     ({ product_id }) => product_id === 0x2006,
   );
   if (!leftController)
-    return "No Joy-Con (L) selected. Open Debug, refresh controllers, then select Joy-Con (L).";
-  return `${leftController.name} is selected. Debug visualization and logging are paused here.`;
+    return t("mapping.noLeft");
+  return t("mapping.selected", { name: leftController.name });
 });
 const activePreset = computed(() =>
   mappingConfig.value.presets.find(
@@ -104,9 +107,7 @@ const dialog = ref<HTMLDialogElement>();
 const selectedLog = ref<LogEntry>();
 const annotationKind = ref<"stick" | "button">("stick");
 const annotationTarget = ref<string>();
-const mappingFeedback = ref(
-  "Choose a preset, enable it, then return the stick to center before each trigger.",
-);
+const mappingFeedback = ref(t("mapping.initial"));
 const accessibilityGranted = ref(false);
 const buttonPhase = ref<"pressed" | "released">("pressed");
 const stickPhase = ref<"moved" | "reset">("moved");
@@ -186,8 +187,17 @@ const selectedReportText = computed(() =>
 );
 const annotationChoice = computed(() =>
   !annotationTarget.value
-    ? "Choose a fixed target."
-    : `Selected: ${annotationKind.value === "stick" ? `${annotationTarget.value} · ${stickPhase.value}` : `${buttonNames[annotationTarget.value]} · ${buttonPhase.value}`}`,
+    ? t("annotation.chooseTarget")
+    : t("annotation.selected", {
+        target:
+          annotationKind.value === "stick"
+            ? annotationTarget.value
+            : buttonNames[annotationTarget.value],
+        phase:
+          annotationKind.value === "stick"
+            ? stickPhase.value
+            : buttonPhase.value,
+      }),
 );
 const groupedLogs = computed(() => {
   const groups: Array<{ timestamp: Date; entries: LogEntry[] }> = [];
@@ -562,18 +572,17 @@ async function checkMappingAccessibility() {
 function openAccessibilitySettings() {
   void invoke("open_accessibility_settings")
     .then(() => {
-      mappingFeedback.value =
-        "Accessibility settings opened. Enable the VibeCon entry, then quit and reopen this app.";
+      mappingFeedback.value = t("mapping.opened");
     })
     .catch((error) => {
       mappingFeedback.value = `Could not open Accessibility settings: ${String(error)}`;
     });
 }
 function testWindowSwitch() {
-  mappingFeedback.value = "Sending test Cmd+Tab…";
+  mappingFeedback.value = t("mapping.testSending");
   void invoke("switch_window", { direction: "next" })
     .then(() => {
-      mappingFeedback.value = "Test sent Cmd+Tab.";
+      mappingFeedback.value = t("mapping.testSent");
     })
     .catch((error) => {
       mappingFeedback.value = `Test failed: ${String(error)}`;
@@ -606,7 +615,7 @@ function resetMappingConfig() {
   void invoke<MappingConfig>("reset_mapping_config")
     .then((config) => {
       mappingConfig.value = config;
-      mappingFeedback.value = "Restored the built-in Code, Codex Cowork, and Inspect Only presets.";
+      mappingFeedback.value = t("mapping.resetDone");
     })
     .catch(showError);
 }
@@ -626,11 +635,9 @@ function controlName(control: string) {
   return names[control] ?? control.replace("joycon_", "").replace(".", " · ");
 }
 function actionName(action: MappingBinding["action"]) {
-  return {
-    window_previous: "Previous window · Cmd + Shift + Tab",
-    window_next: "Next window · Cmd + Tab",
-    focus_codex: "Focus Codex",
-  }[action];
+  return t(
+    `mapping.${action === "window_previous" ? "previousWindow" : action === "window_next" ? "nextWindow" : "focusCodex"}`,
+  );
 }
 function controlPreviewTarget(control: string) {
   return control.replace(/\.stick_(left|right)$/, ".stick_press");
@@ -639,10 +646,13 @@ async function copyAgentPrompt() {
   const prompt = `You are editing VibeCon's mapping configuration. Read ~/.vibecon/mappings.json and keep version 1. You may only use the existing controls and safe actions: window_previous, window_next, focus_codex. Preserve valid JSON, unique preset and binding ids, then explain the change. Do not add shell commands or arbitrary automation.`;
   try {
     await navigator.clipboard.writeText(prompt);
-    mappingFeedback.value = "Agent prompt copied. Paste it into your coding agent with ~/.vibecon/mappings.json.";
+    mappingFeedback.value = t("mapping.copied");
   } catch (error) {
     mappingFeedback.value = `Could not copy the agent prompt: ${String(error)}`;
   }
+}
+function setLocale(next: string) {
+  if (next === "en" || next === "zh-CN") locale.value = next as AppLocale;
 }
 function setActiveControls(next: string[], side: "left" | "right") {
   const newlyPressed = next.filter(
@@ -816,13 +826,14 @@ onBeforeUnmount(() => {
   <main class="app-shell">
     <header class="app-header">
       <div>
-        <p class="eyebrow">HID INSPECTOR · MAPPING LAB</p>
+        <p class="eyebrow">{{ t("app.eyebrow") }}</p>
         <h1 class="app-title">VibeCon</h1>
-        <p class="subtitle">Inspect input first, then enable one deliberate action.</p>
+        <p class="subtitle">{{ t("app.subtitle") }}</p>
       </div>
-      <button class="app-button" @click="refreshControllers">
-        Refresh controllers
-      </button>
+      <div class="header-actions">
+        <label class="language-picker"><span class="sr-only">{{ t("app.language") }}</span><select :value="locale" @change="setLocale(($event.target as HTMLSelectElement).value)"><option value="en">EN</option><option value="zh-CN">中文</option></select></label>
+        <button class="app-button" @click="refreshControllers">{{ t("app.refresh") }}</button>
+      </div>
     </header>
     <nav class="app-tabs" aria-label="Application pages">
       <button
@@ -830,23 +841,23 @@ onBeforeUnmount(() => {
         :class="{ selected: activePage === 'debug' }"
         @click="activePage = 'debug'"
       >
-        Debug</button
+        {{ t("app.debug") }}</button
       ><button
         class="app-button tab"
         :class="{ selected: activePage === 'mappings' }"
         @click="activePage = 'mappings'"
       >
-        Mappings
+        {{ t("app.mappings") }}
       </button>
     </nav>
     <section v-if="activePage === 'mappings'" class="panel mapping-panel">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">PRESET LIBRARY</p>
-          <h2 class="section-title">Controller mappings</h2>
-          <p class="hint">A preset is runnable only on this page. Debug always pauses automation.</p>
+          <p class="eyebrow">{{ t("mapping.eyebrow") }}</p>
+          <h2 class="section-title">{{ t("mapping.title") }}</h2>
+          <p class="hint">{{ t("mapping.subtitle") }}</p>
         </div>
-        <button class="secondary" @click="copyAgentPrompt">Copy Agent Prompt</button>
+        <button class="secondary" @click="copyAgentPrompt">{{ t("mapping.copyPrompt") }}</button>
       </div>
       <div class="preset-picker" role="tablist" aria-label="Mapping presets">
         <button
@@ -859,7 +870,7 @@ onBeforeUnmount(() => {
           @click="selectPreset(preset.id)"
         >
           <strong>{{ preset.name }}</strong>
-          <span>{{ preset.bindings.length ? `${preset.bindings.length} bindings` : "No automation" }}</span>
+          <span>{{ preset.bindings.length ? t("mapping.bindings", { count: preset.bindings.length }) : t("mapping.noAutomation") }}</span>
         </button>
       </div>
       <template v-if="activePreset">
@@ -871,7 +882,7 @@ onBeforeUnmount(() => {
           <label class="switch-control">
             <input v-model="activePreset.enabled" type="checkbox" />
             <span class="switch-track" aria-hidden="true"></span>
-            <span>{{ activePreset.enabled ? "Enabled" : "Disabled" }}</span>
+            <span>{{ activePreset.enabled ? t("mapping.enabled") : t("mapping.disabled") }}</span>
           </label>
         </div>
         <div v-if="activePreset.bindings.length" class="mapping-layout">
@@ -890,18 +901,18 @@ onBeforeUnmount(() => {
           </div>
           <JoyCon side="right" :preview-target="previewTarget" />
         </div>
-        <p v-else class="empty-preset">Inspect Only intentionally sends no actions to macOS.</p>
+        <p v-else class="empty-preset">{{ t("mapping.inspectOnly") }}</p>
       </template>
       <div class="mapping-actions">
-        <button class="app-button mapping-test" @click="testWindowSwitch">Test Cmd+Tab</button>
-        <button v-if="!accessibilityGranted" class="app-button mapping-test" @click="openAccessibilitySettings">Open Accessibility settings</button>
-        <button class="secondary" @click="resetMappingConfig">Reset defaults</button>
+        <button class="app-button mapping-test" @click="testWindowSwitch">{{ t("mapping.test") }}</button>
+        <button v-if="!accessibilityGranted" class="app-button mapping-test" @click="openAccessibilitySettings">{{ t("mapping.openAccessibility") }}</button>
+        <button class="secondary" @click="resetMappingConfig">{{ t("mapping.reset") }}</button>
       </div>
       <p class="mapping-feedback">{{ mappingFeedback }}</p>
     </section>
     <section v-show="activePage === 'debug'" class="panel">
       <div class="section-heading">
-        <h2 class="section-title">Paired controllers</h2>
+        <h2 class="section-title">{{ t("debug.paired") }}</h2>
         <span class="status" :class="statusKind">{{ status }}</span>
       </div>
       <div class="controllers">
@@ -932,18 +943,16 @@ onBeforeUnmount(() => {
             >
           </button></template
         ><span v-else
-          >No Nintendo controller found. Confirm Bluetooth pairing, then click
-          Refresh.</span
+          >{{ t("debug.noController") }}</span
         >
       </div>
     </section>
     <section v-show="activePage === 'debug'" class="visualizer panel">
       <div class="section-heading">
         <div>
-          <h2 class="section-title">Live Joy-Con</h2>
+          <h2 class="section-title">{{ t("debug.live") }}</h2>
           <p class="hint">
-            Blue controls are detected; dim controls still need a confirmed bit
-            mapping.
+            {{ t("debug.visualizerHint") }}
           </p>
         </div>
         <output class="raw-buttons">{{ buttonsReadout }}</output>
@@ -955,9 +964,9 @@ onBeforeUnmount(() => {
           :nub-transform="nubTransform"
         />
         <div class="axis-readout">
-          <span class="readout-label">Primary stick</span
+          <span class="readout-label">{{ t("debug.primaryStick") }}</span
           ><output class="axis-output">{{ renderStick(leftStick) }}</output
-          ><span class="readout-label">Secondary axes</span
+          ><span class="readout-label">{{ t("debug.secondaryAxes") }}</span
           ><output class="axis-output">{{ renderStick(rightStick) }}</output>
         </div>
         <JoyCon
@@ -971,29 +980,28 @@ onBeforeUnmount(() => {
     <section v-show="activePage === 'debug'" class="panel transcript-panel">
       <div class="section-heading log-heading">
         <div>
-          <h2 class="section-title">Raw input reports</h2>
+          <h2 class="section-title">{{ t("debug.reports") }}</h2>
           <p class="hint">
-            Click any report to label it. Clearing the view never deletes saved
-            labels.
+            {{ t("debug.reportsHint") }}
           </p>
         </div>
         <div class="log-actions">
           <label
-            >Log policy<select
+            >{{ t("debug.logPolicy") }}<select
               v-model="sampleRate"
               @change="
                 lastPresentedAt.clear();
                 lastKeyOperation.clear();
               "
             >
-              <option value="key">Key operations</option>
-              <option value="75">75 ms snapshots (original)</option>
+              <option value="key">{{ t("debug.keyOperations") }}</option>
+              <option value="75">{{ t("debug.snapshots") }}</option>
               <option value="60">60 Hz</option>
               <option value="30">30 Hz</option>
               <option value="10">10 Hz</option>
-              <option value="all">All reports</option>
+              <option value="all">{{ t("debug.allReports") }}</option>
             </select></label
-          ><button class="secondary" @click="clearLog">Clear</button>
+          ><button class="secondary" @click="clearLog">{{ t("debug.clear") }}</button>
         </div>
       </div>
       <div class="transcript">
@@ -1038,13 +1046,11 @@ onBeforeUnmount(() => {
                       !savedAnnotation(entry)?.previous_report,
                     )
                   }}</span
-                ><span v-else class="label-prompt">Label</span>
+                ><span v-else class="label-prompt">{{ t("debug.label") }}</span>
               </button>
             </div>
           </div></template
-        ><span v-else
-          >Choose a Joy-Con, then move a stick or press a button.</span
-        >
+        ><span v-else>{{ t("debug.chooseController") }}</span>
       </div>
     </section>
   </main>
@@ -1052,11 +1058,11 @@ onBeforeUnmount(() => {
     <form method="dialog" class="modal-card" @submit.prevent>
       <header>
         <div>
-          <p class="eyebrow">ANNOTATE SAMPLE</p>
-          <h2 class="section-title">Give this report a meaning</h2>
+          <p class="eyebrow">{{ t("annotation.eyebrow") }}</p>
+          <h2 class="section-title">{{ t("annotation.title") }}</h2>
         </div>
         <button class="secondary" type="button" @click="dialog?.close()">
-          Close
+          {{ t("annotation.close") }}
         </button>
       </header>
       <p class="selected-report">{{ selectedReportText }}</p>
@@ -1067,14 +1073,14 @@ onBeforeUnmount(() => {
           :class="{ active: annotationKind === 'stick' }"
           @click="setKind('stick')"
         >
-          Stick operation</button
+          {{ t("annotation.stick") }}</button
         ><button
           type="button"
           class="app-button kind"
           :class="{ active: annotationKind === 'button' }"
           @click="setKind('button')"
         >
-          Button operation
+          {{ t("annotation.button") }}
         </button>
       </div>
       <template v-if="annotationKind === 'stick'"
@@ -1088,7 +1094,7 @@ onBeforeUnmount(() => {
               annotationTarget = undefined;
             "
           >
-            Moved</button
+            {{ t("annotation.moved") }}</button
           ><button
             type="button"
             class="app-button"
@@ -1098,7 +1104,7 @@ onBeforeUnmount(() => {
               chooseTarget('center');
             "
           >
-            Reset to center
+            {{ t("annotation.reset") }}
           </button>
         </div>
         <div class="stick-radar">
@@ -1131,14 +1137,14 @@ onBeforeUnmount(() => {
               :class="{ selected: buttonPhase === 'pressed' }"
               @click="buttonPhase = 'pressed'"
             >
-              Pressed</button
+              {{ t("annotation.pressed") }}</button
             ><button
               type="button"
               class="app-button"
               :class="{ selected: buttonPhase === 'released' }"
               @click="buttonPhase = 'released'"
             >
-              Released
+              {{ t("annotation.released") }}
             </button>
           </div>
           <div class="button-picker">
@@ -1165,7 +1171,7 @@ onBeforeUnmount(() => {
           :disabled="!annotationTarget"
           @click="saveAnnotation"
         >
-          Save annotation
+          {{ t("annotation.save") }}
         </button>
       </footer>
     </form>
