@@ -4,43 +4,12 @@ import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import JoyCon from "./components/JoyCon.vue";
+import DebugPage from "./components/DebugPage.vue";
+import MappingsPage from "./components/MappingsPage.vue";
+import MotionPage from "./components/MotionPage.vue";
 import { isAppLocale, LOCALE_STORAGE_KEY, type AppLocale } from "./i18n";
-
-type Controller = {
-  id: string;
-  name: string;
-  product_id: number;
-  transport: string;
-};
-type Stick = {
-  x: number;
-  y: number;
-  normalized_x: number;
-  normalized_y: number;
-};
-type ImuSample = {
-  acceleration: [number, number, number];
-  gyroscope: [number, number, number];
-};
-type InputReport = {
-  report_id: number;
-  bytes: number[];
-  left_stick: Stick | null;
-  right_stick: Stick | null;
-  buttons: [number, number, number] | null;
-  imu: ImuSample | null;
-};
-type LogEntry = {
-  device_id: string;
-  timestamp: Date;
-  previous_report?: InputReport;
-  report: InputReport;
-};
-type Label = {
-  kind: "stick" | "button";
-  target: string;
-  phase?: "pressed" | "released" | "moved" | "reset";
-};
+import type { Controller, ImuSample, InputReport, Label, LogEntry, MappingConfig, Stick } from "./types";
+import { RingBuffer } from "./utils/ring-buffer";
 type Annotation = {
   version: number;
   created_at_ms: number;
@@ -50,44 +19,12 @@ type Annotation = {
   label: Label;
 };
 type StreamEvent = { device_id: string; report: InputReport };
-type MappingBinding = {
-  id: string;
-  control: string;
-  action:
-    | "window_previous"
-    | "window_next"
-    | "focus_codex"
-    | "focus_next"
-    | "focus_previous"
-    | "activate_focused";
-  enabled: boolean;
-};
-type MappingPreset = {
-  id: string;
-  name: string;
-  enabled: boolean;
-  bindings: MappingBinding[];
-};
-type MappingConfig = {
-  version: number;
-  activePresetId: string;
-  presets: MappingPreset[];
-};
 
 function defaultMappingConfig(): MappingConfig {
   return {
-    version: 2,
+    version: 3,
     activePresetId: "codex-cowork",
     presets: [
-      {
-        id: "code",
-        name: "Code",
-        enabled: true,
-        bindings: [
-          { id: "window-previous", control: "joycon_left.stick_left", action: "window_previous", enabled: true },
-          { id: "window-next", control: "joycon_left.stick_right", action: "window_next", enabled: true },
-        ],
-      },
       {
         id: "codex-cowork",
         name: "Codex Cowork",
@@ -100,29 +37,20 @@ function defaultMappingConfig(): MappingConfig {
         ],
       },
       { id: "inspect-only", name: "Inspect Only", enabled: false, bindings: [] },
-      {
-        id: "keyboard-focus",
-        name: "Keyboard Focus",
-        enabled: false,
-        bindings: [
-          { id: "focus-previous", control: "joycon_left.dpad_up", action: "focus_previous", enabled: true },
-          { id: "focus-next", control: "joycon_left.dpad_down", action: "focus_next", enabled: true },
-          { id: "activate-focused", control: "joycon_right.a", action: "activate_focused", enabled: true },
-        ],
-      },
     ],
   };
 }
 
 const isTauriDesktop = "__TAURI_INTERNALS__" in window;
 const { t, locale } = useI18n();
-const activePage = ref<"debug" | "mappings">("debug");
+const activePage = ref<"debug" | "motion" | "mappings">("debug");
 const mappingConfig = ref<MappingConfig>(defaultMappingConfig());
 const controllers = ref<Controller[]>([]);
 const selectedControllers = ref<Controller[]>([]);
 const status = ref("Looking for Nintendo HID devices…");
 const statusKind = ref<"" | "connected" | "error">("");
-const logs = ref<LogEntry[]>([]);
+const logBuffer = new RingBuffer<LogEntry>(32);
+const logVersion = ref(0);
 const annotations = ref<Annotation[]>([]);
 const sampleRate = ref("key");
 const leftStick = ref<Stick | null>(null);
@@ -145,11 +73,6 @@ const mappingInputStatus = computed(() => {
     return t("mapping.noLeft");
   return t("mapping.selected", { name: leftController.name });
 });
-const activePreset = computed(() =>
-  mappingConfig.value.presets.find(
-    ({ id }) => id === mappingConfig.value.activePresetId,
-  ),
-);
 const recentControls = ref<string[]>([]);
 const buttonsReadout = ref("D-pad 00 · waiting for input");
 const dialog = ref<HTMLDialogElement>();
@@ -160,7 +83,6 @@ const mappingFeedback = ref(t("mapping.initial"));
 const accessibilityGranted = ref(false);
 const buttonPhase = ref<"pressed" | "released">("pressed");
 const stickPhase = ref<"moved" | "reset">("moved");
-const previewTarget = ref<string>();
 let unlistenInput: UnlistenFn | undefined;
 let unlistenError: UnlistenFn | undefined;
 const lastPresentedAt = new Map<string, number>();
@@ -249,8 +171,10 @@ const annotationChoice = computed(() =>
       }),
 );
 const groupedLogs = computed(() => {
+  // Fixed slots are not deeply reactive. One counter invalidates this view.
+  logVersion.value;
   const groups: Array<{ timestamp: Date; entries: LogEntry[] }> = [];
-  for (const entry of logs.value) {
+  for (const entry of logBuffer.newestFirst()) {
     const group = groups.at(-1);
     if (
       group &&
@@ -479,10 +403,8 @@ function shouldLog(report: InputReport, deviceId: string) {
 }
 function applyReport(report: InputReport, controller: Controller) {
   const side = controller.product_id === 0x2007 ? "right" : "left";
-  // Mapping only needs the stick direction. Keep the full reactive visualizer,
-  // button decoder, and debug readouts dormant outside the Debug page.
-  if (activePage.value !== "debug") return;
-
+  // IMU samples feed Motion Lab on every page. The previous guard below made
+  // the visualizer retain only the sample present when the page was mounted.
   if (side === "left") {
     leftStick.value = report.left_stick;
     leftImu.value = report.imu;
@@ -490,6 +412,9 @@ function applyReport(report: InputReport, controller: Controller) {
     rightStick.value = report.right_stick;
     rightImu.value = report.imu;
   }
+  // Mapping only needs the stick direction. Keep button decoding, logs, and
+  // debug readouts dormant outside the Debug page.
+  if (activePage.value !== "debug") return;
   if (!report.buttons) {
     activeControlsBySide.value[side] = [];
     buttonsReadout.value = "No decoded button data";
@@ -691,6 +616,7 @@ async function persistMappingConfig() {
 function selectPreset(id: string) {
   mappingConfig.value.activePresetId = id;
 }
+
 function resetMappingConfig() {
   void invoke<MappingConfig>("reset_mapping_config")
     .then((config) => {
@@ -699,37 +625,8 @@ function resetMappingConfig() {
     })
     .catch(showError);
 }
-function controlName(control: string) {
-  const names: Record<string, string> = {
-    "joycon_left.stick_left": "L stick ←",
-    "joycon_left.stick_right": "L stick →",
-    "joycon_left.dpad_up": "L D-pad ↑",
-    "joycon_left.dpad_down": "L D-pad ↓",
-    "joycon_left.dpad_left": "L D-pad ←",
-    "joycon_left.dpad_right": "L D-pad →",
-    "joycon_right.x": "R X",
-    "joycon_right.y": "R Y",
-    "joycon_right.a": "R A",
-    "joycon_right.b": "R B",
-  };
-  return names[control] ?? control.replace("joycon_", "").replace(".", " · ");
-}
-function actionName(action: MappingBinding["action"]) {
-  const key = {
-    window_previous: "previousWindow",
-    window_next: "nextWindow",
-    focus_codex: "focusCodex",
-    focus_next: "focusNext",
-    focus_previous: "focusPrevious",
-    activate_focused: "activateFocused",
-  }[action];
-  return t(`mapping.${key}`);
-}
-function controlPreviewTarget(control: string) {
-  return control.replace(/\.stick_(left|right)$/, ".stick_press");
-}
 async function copyAgentPrompt() {
-  const prompt = `You are editing VibeCon's mapping configuration. Read ~/.vibecon/mappings.json and keep version 2. You may only use the existing controls and safe actions: window_previous, window_next, focus_codex, focus_next, focus_previous, activate_focused. Preserve valid JSON, unique preset and binding ids, then explain the change. Do not add shell commands or arbitrary automation.`;
+  const prompt = `You are editing VibeCon's mapping configuration. Read ~/.vibecon/mappings.json and keep version 3. You may only use the existing controls and safe actions: window_previous, window_next, focus_codex. Preserve valid JSON, unique preset and binding ids, then explain the change. Do not add shell commands or arbitrary automation.`;
   try {
     await navigator.clipboard.writeText(prompt);
     mappingFeedback.value = t("mapping.copied");
@@ -743,8 +640,15 @@ function setLocale(next: string) {
   localStorage.setItem(LOCALE_STORAGE_KEY, next);
 }
 function setActiveControls(next: string[], side: "left" | "right") {
+  const current = activeControlsBySide.value[side];
+  if (
+    current.length === next.length &&
+    current.every((target, index) => target === next[index])
+  ) {
+    return;
+  }
   const newlyPressed = next.filter(
-    (target) => !activeControlsBySide.value[side].includes(target),
+    (target) => !current.includes(target),
   );
   activeControlsBySide.value[side] = next;
   if (!newlyPressed.length) return;
@@ -762,17 +666,21 @@ function showError(error: unknown) {
   statusKind.value = "error";
 }
 function clearLog() {
-  logs.value = [];
+  logBuffer.clear();
+  logVersion.value += 1;
+}
+function setSampleRate(value: string) {
+  sampleRate.value = value;
+  lastPresentedAt.clear();
+  lastKeyOperation.clear();
 }
 function appendLog(
   device_id: string,
   report: InputReport,
   previous_report?: InputReport,
 ) {
-  logs.value = [
-    { timestamp: new Date(), device_id, previous_report, report },
-    ...logs.value,
-  ].slice(0, 160);
+  logBuffer.push({ timestamp: new Date(), device_id, previous_report, report });
+  logVersion.value += 1;
 }
 function selectController(controller: Controller) {
   const selected = selectedControllers.value.some(
@@ -933,111 +841,68 @@ onBeforeUnmount(() => {
         {{ t("app.debug") }}</button
       ><button
         class="app-button tab"
+        :class="{ selected: activePage === 'motion' }"
+        @click="activePage = 'motion'"
+      >
+        {{ t("app.motion") }}</button
+      ><button
+        class="app-button tab"
         :class="{ selected: activePage === 'mappings' }"
         @click="activePage = 'mappings'"
       >
         {{ t("app.mappings") }}
       </button>
     </nav>
-    <section v-if="activePage === 'mappings'" class="panel mapping-panel">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">{{ t("mapping.eyebrow") }}</p>
-          <h2 class="section-title">{{ t("mapping.title") }}</h2>
-          <p class="hint">{{ t("mapping.subtitle") }}</p>
-        </div>
-        <button class="secondary" @click="copyAgentPrompt">{{ t("mapping.copyPrompt") }}</button>
-      </div>
-      <div class="preset-picker" role="tablist" aria-label="Mapping presets">
-        <button
-          v-for="preset in mappingConfig.presets"
-          :key="preset.id"
-          class="preset-card"
-          :class="{ selected: preset.id === mappingConfig.activePresetId }"
-          role="tab"
-          :aria-selected="preset.id === mappingConfig.activePresetId"
-          @click="selectPreset(preset.id)"
-        >
-          <strong>{{ preset.name }}</strong>
-          <span>{{ preset.bindings.length ? t("mapping.bindings", { count: preset.bindings.length }) : t("mapping.noAutomation") }}</span>
-        </button>
-      </div>
-      <template v-if="activePreset">
-        <div class="mapping-toolbar">
-          <div>
-            <p class="mapping-preset-title">{{ activePreset.name }}</p>
-            <p class="mapping-input-status">{{ mappingInputStatus }}</p>
-          </div>
-          <label class="switch-control">
-            <input v-model="activePreset.enabled" type="checkbox" />
-            <span class="switch-track" aria-hidden="true"></span>
-            <span>{{ activePreset.enabled ? t("mapping.enabled") : t("mapping.disabled") }}</span>
-          </label>
-        </div>
-        <div v-if="activePreset.bindings.length" class="mapping-layout">
-          <JoyCon side="left" :preview-target="previewTarget" />
-          <div class="binding-list">
-            <article v-for="binding in activePreset.bindings" :key="binding.id" class="binding-card">
-              <div>
-                <p class="binding-control">{{ controlName(binding.control) }}</p>
-                <p class="binding-action">{{ actionName(binding.action) }}</p>
-              </div>
-              <label class="switch-control compact" @mouseenter="previewTarget = controlPreviewTarget(binding.control)" @mouseleave="previewTarget = undefined">
-                <input v-model="binding.enabled" type="checkbox" />
-                <span class="switch-track" aria-hidden="true"></span>
-              </label>
-            </article>
-          </div>
-          <JoyCon side="right" :preview-target="previewTarget" />
-        </div>
-        <p v-else class="empty-preset">{{ t("mapping.inspectOnly") }}</p>
-      </template>
-      <div class="mapping-actions">
-        <button class="app-button mapping-test" @click="testWindowSwitch">{{ t("mapping.test") }}</button>
-        <button class="app-button mapping-test" @click="testJoyConVibration">{{ t("mapping.testVibration") }}</button>
-        <button v-if="!accessibilityGranted" class="app-button mapping-test" @click="openAccessibilitySettings">{{ t("mapping.openAccessibility") }}</button>
-        <button class="secondary" @click="resetMappingConfig">{{ t("mapping.reset") }}</button>
-      </div>
-      <p class="mapping-feedback">{{ mappingFeedback }}</p>
-    </section>
-    <section v-show="activePage === 'debug'" class="panel">
-      <div class="section-heading">
-        <h2 class="section-title">{{ t("debug.paired") }}</h2>
-        <span class="status" :class="statusKind">{{ status }}</span>
-      </div>
-      <div class="controllers">
-        <template v-if="controllers.length"
-          ><button
-            v-for="controller in controllers"
-            :key="controller.id"
-            class="controller"
-            :class="{
-              'selected-controller': selectedControllers.some(
-                ({ id }) => id === controller.id,
-              ),
-            }"
-            :aria-pressed="
-              selectedControllers.some(({ id }) => id === controller.id)
-            "
-            @click="selectController(controller)"
-          >
-            <span class="controller-check" aria-hidden="true">{{
-              selectedControllers.some(({ id }) => id === controller.id)
-                ? "✓"
-                : ""
-            }}</span
-            ><strong>{{ controller.name }}</strong
-            ><span class="controller-meta"
-              >product 0x{{ controller.product_id.toString(16) }} ·
-              {{ controller.transport }}</span
-            >
-          </button></template
-        ><span v-else
-          >{{ t("debug.noController") }}</span
-        >
-      </div>
-    </section>
-    <section v-show="activePage === 'debug'" class="visualizer panel">
+    <MappingsPage
+      v-if="activePage === 'mappings'"
+      :config="mappingConfig"
+      :input-status="mappingInputStatus"
+      :feedback="mappingFeedback"
+      :accessibility-granted="accessibilityGranted"
+      @select-preset="selectPreset"
+      @update-config="mappingConfig = $event"
+      @copy-prompt="copyAgentPrompt"
+      @test-window="testWindowSwitch"
+      @test-vibration="testJoyConVibration"
+      @open-accessibility="openAccessibilitySettings"
+      @reset="resetMappingConfig"
+    />
+    <MotionPage
+      v-if="activePage === 'motion'"
+      :left-imu="leftImu"
+      :right-imu="rightImu"
+    />
+    <DebugPage
+      v-if="activePage === 'debug'"
+      :controllers="controllers"
+      :selected-controllers="selectedControllers"
+      :status="status"
+      :status-kind="statusKind"
+      :active-controls="activeControls"
+      :recent-controls="recentControls"
+      :left-stick="leftStick"
+      :right-stick="rightStick"
+      :left-imu="leftImu"
+      :right-imu="rightImu"
+      :nub-transform="nubTransform"
+      :right-nub-transform="rightNubTransform"
+      :buttons-readout="buttonsReadout"
+      :sample-rate="sampleRate"
+      :grouped-logs="groupedLogs"
+      :render-stick="renderStick"
+      :render-imu="renderImu"
+      :fingerprint="fingerprint"
+      :format-report="formatReport"
+      :built-in-labels="builtInLabels"
+      :saved-annotation="savedAnnotation"
+      :label-text="labelText"
+      @select-controller="selectController"
+      @update-sample-rate="setSampleRate"
+      @clear="clearLog"
+      @annotate="openAnnotation"
+    />
+    <!-- Transitional source retained while the page extraction settles; DebugPage renders this UI. -->
+    <section v-if="false" class="visualizer panel">
       <div class="section-heading">
         <div>
           <h2 class="section-title">{{ t("debug.live") }}</h2>
@@ -1071,7 +936,7 @@ onBeforeUnmount(() => {
         />
       </div>
     </section>
-    <section v-show="activePage === 'debug'" class="panel transcript-panel">
+    <section v-if="false" class="panel transcript-panel">
       <div class="section-heading log-heading">
         <div>
           <h2 class="section-title">{{ t("debug.reports") }}</h2>

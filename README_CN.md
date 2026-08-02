@@ -59,7 +59,7 @@ VibeCon 从一个很朴素的想法开始：与其买一个昂贵又封闭的「
 - 原创 CSS Joy-Con 可视化：摇杆实时同步、按住高亮、短按有残影提示。
 - 日志策略可选：关键操作、旧版 75ms 快照、60/30/10 Hz 采样或每一条 report；也可以随时清空当前可见日志。
 - 对抓到的 report 打标：摇杆点位或按键按下/抬起。数据只保存在 `~/.vibecon/annotations.jsonl`，再次命中时会回显标签。
-- **基于预设的 macOS 映射：** 可选择 **Code**、**Codex Cowork**、**Inspect Only**，或需要显式开启的 **Keyboard Focus** 实验。前两个预设可用左摇杆向右/向左切换下一个/上一个 `Cmd+Tab` 窗口，并用 Joy-Con (L) 的方向上或 Joy-Con (R) 的 X 聚焦 Codex。Keyboard Focus 会向前台应用发送 Tab / Shift+Tab / Space。每个预设和绑定都需要显式开启，保存在 `~/.vibecon/mappings.json`，并在 Debug 页面临时失效，避免干扰抓包。
+- **已验证的 macOS 映射：** **Codex Cowork** 用 Joy-Con (L) 摇杆向左/向右切换窗口，用 Joy-Con (L) 的方向上或 Joy-Con (R) 的 X 聚焦 Codex。**Inspect Only** 则刻意不发送任何操作。每个绑定都需要显式开启，保存在 `~/.vibecon/mappings.json`，并在 Debug 页面临时失效，避免干扰抓包。新动作只会在真机验证后逐项加入。
 - **实验性 Joy-Con 输出：** Mappings 页面提供一个手动、短促的 **测试已选 Joy-Con 震动** 脉冲。它不会被绑定或任务事件自动触发；任何 HID 写入失败都会显示出来且不会重试。
 
 ### 已观测到的 Joy-Con 规律
@@ -85,16 +85,15 @@ pnpm tauri dev
 ## 配置 macOS 映射
 
 1. 在 **Debug** 页面选中要使用的手柄。需要两个 Codex 聚焦按键时，左右两侧都选中。
-2. 打开 **Mappings**，选择预设，然后启用总开关及所需绑定。**Code** 提供窗口导航；**Codex Cowork** 增加两个聚焦 Codex 的按键；**Inspect Only** 则刻意不向 macOS 发送操作；**Keyboard Focus** 向前台应用发送 Tab / Shift+Tab / Space。该页面会暂停 Debug 的可视化与日志，但 HID reader 仍会保持运行。
+2. 打开 **Mappings**，选择 **Codex Cowork**，然后按需开启总开关与已验证的单项绑定。**Inspect Only** 则刻意不向 macOS 发送操作。该页面会暂停 Debug 的可视化与日志，但 HID reader 仍会保持运行。
 3. 窗口切换需要给 VibeCon 授予 **辅助功能** 权限；如果缺失，Mappings 页面可以直接打开对应的系统设置页面。
 
 窗口切换直接通过 macOS Quartz 发送快捷键，因此只需要 **辅助功能** 权限；聚焦 Codex 使用系统应用启动器，不需要辅助功能权限。
 
 ### 用 Agent 编辑预设
 
-映射是位于 `~/.vibecon/mappings.json` 的可读 JSON。点击 **Copy Agent Prompt** 可以复制 schema 与安全边界给编码 Agent。VibeCon 只接受已知 Joy-Con 控件，以及 `window_previous`、`window_next`、`focus_codex`、`focus_next`、`focus_previous`、`activate_focused` 这些安全动作；它不会从映射文件执行任意 shell 命令。点击 **Reset defaults** 可恢复四个内置预设。
+映射是位于 `~/.vibecon/mappings.json` 的可读 JSON。点击 **Copy Agent Prompt** 可以复制 schema 与安全边界给编码 Agent。VibeCon 只接受已知 Joy-Con 控件，以及已验证的 `window_previous`、`window_next`、`focus_codex` 三个动作；它不会从映射文件执行任意 shell 命令。点击 **Reset defaults** 可恢复已验证的内置配置。
 
-Keyboard Focus 刻意只做键盘层的焦点导航，不读取或控制完整的可访问性树：它适用于前台应用支持标准 Tab 导航的场景，并受该应用自身焦点规则限制。
 
 ## 开发
 

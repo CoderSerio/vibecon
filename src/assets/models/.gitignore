@@ -1,0 +1,10 @@
+# Downloaded 3D model assets are licensed for local development only until
+# their redistribution terms have been verified. Keep the source documentation
+# tracked, but do not accidentally publish binary model files.
+*.blend
+*.glb
+*.gltf
+*.bin
+*.png
+*.jpg
+*.jpeg

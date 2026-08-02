@@ -192,24 +192,19 @@ impl MappingConfig {
 impl Default for MappingConfig {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             active_preset_id: "codex-cowork".to_owned(),
             presets: vec![
-                MappingPreset {
-                    id: "code".to_owned(),
-                    name: "Code".to_owned(),
-                    enabled: true,
-                    bindings: vec![
-                        mapping_binding("window-previous", "joycon_left.stick_left", "window_previous"),
-                        mapping_binding("window-next", "joycon_left.stick_right", "window_next"),
-                    ],
-                },
                 MappingPreset {
                     id: "codex-cowork".to_owned(),
                     name: "Codex Cowork".to_owned(),
                     enabled: true,
                     bindings: vec![
-                        mapping_binding("window-previous", "joycon_left.stick_left", "window_previous"),
+                        mapping_binding(
+                            "window-previous",
+                            "joycon_left.stick_left",
+                            "window_previous",
+                        ),
                         mapping_binding("window-next", "joycon_left.stick_right", "window_next"),
                         mapping_binding("focus-codex-left", "joycon_left.dpad_up", "focus_codex"),
                         mapping_binding("focus-codex-right", "joycon_right.x", "focus_codex"),
@@ -221,22 +216,8 @@ impl Default for MappingConfig {
                     enabled: false,
                     bindings: vec![],
                 },
-                keyboard_focus_preset(),
             ],
         }
-    }
-}
-
-fn keyboard_focus_preset() -> MappingPreset {
-    MappingPreset {
-        id: "keyboard-focus".to_owned(),
-        name: "Keyboard Focus".to_owned(),
-        enabled: false,
-        bindings: vec![
-            mapping_binding("focus-previous", "joycon_left.dpad_up", "focus_previous"),
-            mapping_binding("focus-next", "joycon_left.dpad_down", "focus_next"),
-            mapping_binding("activate-focused", "joycon_right.a", "activate_focused"),
-        ],
     }
 }
 
@@ -323,7 +304,12 @@ fn start_joycon_stream(
     mapping_state: tauri::State<MappingRuntimeState>,
     id: String,
 ) -> Result<(), String> {
-    if !state.active_ids.lock().map_err(|_| "Input stream state is unavailable")?.insert(id.clone()) {
+    if !state
+        .active_ids
+        .lock()
+        .map_err(|_| "Input stream state is unavailable")?
+        .insert(id.clone())
+    {
         return Ok(());
     }
     let stream_state = state.inner().clone();
@@ -335,20 +321,35 @@ fn start_joycon_stream(
                 .device_list()
                 .find(|device| device.path().to_string_lossy() == id)
                 .ok_or("The selected Joy-Con is no longer connected")?;
-            let device = Arc::new(Mutex::new(info
-                .open_device(&api)
-                .map_err(|error| format!("Could not open Joy-Con input: {error}"))?));
+            let device =
+                Arc::new(Mutex::new(info.open_device(&api).map_err(|error| {
+                    format!("Could not open Joy-Con input: {error}")
+                })?));
             stream_state
                 .devices
                 .lock()
                 .map_err(|_| "Joy-Con output state is unavailable")?
                 .insert(id.clone(), device.clone());
+            if let Err(error) = configure_joycon_motion(&device, &stream_state) {
+                // Motion is an optional capability. Keep the input stream alive
+                // so button and stick debugging still works on devices or HID
+                // transports that reject native Joy-Con subcommands.
+                let _ = app.emit(
+                    "joycon-stream-error",
+                    format!("Joy-Con motion could not be enabled; ordinary input is still available: {error}"),
+                );
+            }
             let mut buffer = [0_u8; 64];
             // Keep the frontend responsive even when Bluetooth HID reports at
             // a much higher rate than the WebView can render.
             let mut last_emitted_at = Instant::now() - Duration::from_secs(1);
             let mut binding_states = HashMap::<String, BindingTriggerState>::new();
-            while stream_state.active_ids.lock().map(|ids| ids.contains(&id)).unwrap_or(false) {
+            while stream_state
+                .active_ids
+                .lock()
+                .map(|ids| ids.contains(&id))
+                .unwrap_or(false)
+            {
                 let count = device
                     .lock()
                     .map_err(|_| "Joy-Con device handle is unavailable")?
@@ -399,7 +400,9 @@ fn process_mapping_report(
         Ok(config) => config.clone(),
         Err(_) => return,
     };
-    let Some(preset) = config.active_preset() else { return };
+    let Some(preset) = config.active_preset() else {
+        return;
+    };
     if !preset.enabled {
         return;
     }
@@ -429,12 +432,16 @@ fn control_is_pressed(control: &str, report: &InputReport, product_id: u16) -> b
             .left_stick
             .as_ref()
             .is_some_and(|stick| stick.normalized_x >= STICK_TRIGGER_THRESHOLD),
-        _ => pressed_button_controls(report, product_id).iter().any(|target| *target == control),
+        _ => pressed_button_controls(report, product_id)
+            .iter()
+            .any(|target| *target == control),
     }
 }
 
 fn pressed_button_controls(report: &InputReport, product_id: u16) -> Vec<&'static str> {
-    let Some([buttons, extra, left]) = report.buttons else { return vec![] };
+    let Some([buttons, extra, left]) = report.buttons else {
+        return vec![];
+    };
     let mut controls = Vec::new();
     let mut add_bits = |bits: u8, mappings: &[(&'static str, u8)]| {
         controls.extend(
@@ -445,48 +452,88 @@ fn pressed_button_controls(report: &InputReport, product_id: u16) -> Vec<&'stati
     };
     match (report.report_id, product_id) {
         (0x30, JOYCON_LEFT_PRODUCT_ID) => {
-            add_bits(left, &[
-                ("joycon_left.dpad_down", 0x01), ("joycon_left.dpad_up", 0x02),
-                ("joycon_left.dpad_right", 0x04), ("joycon_left.dpad_left", 0x08),
-                ("joycon_left.sr", 0x10), ("joycon_left.sl", 0x20),
-                ("joycon_left.l", 0x40), ("joycon_left.zl", 0x80),
-            ]);
-            add_bits(extra, &[
-                ("joycon_left.minus", 0x01), ("joycon_left.stick_press", 0x04),
-                ("joycon_left.capture", 0x20),
-            ]);
+            add_bits(
+                left,
+                &[
+                    ("joycon_left.dpad_down", 0x01),
+                    ("joycon_left.dpad_up", 0x02),
+                    ("joycon_left.dpad_right", 0x04),
+                    ("joycon_left.dpad_left", 0x08),
+                    ("joycon_left.sr", 0x10),
+                    ("joycon_left.sl", 0x20),
+                    ("joycon_left.l", 0x40),
+                    ("joycon_left.zl", 0x80),
+                ],
+            );
+            add_bits(
+                extra,
+                &[
+                    ("joycon_left.minus", 0x01),
+                    ("joycon_left.stick_press", 0x04),
+                    ("joycon_left.capture", 0x20),
+                ],
+            );
         }
         (0x30, JOYCON_RIGHT_PRODUCT_ID) => {
-            add_bits(buttons, &[
-                ("joycon_right.y", 0x01), ("joycon_right.x", 0x02),
-                ("joycon_right.b", 0x04), ("joycon_right.a", 0x08),
-                ("joycon_right.sr", 0x10), ("joycon_right.sl", 0x20),
-                ("joycon_right.r", 0x40), ("joycon_right.zr", 0x80),
-            ]);
-            add_bits(extra, &[
-                ("joycon_right.plus", 0x02), ("joycon_right.stick_press", 0x08),
-                ("joycon_right.home", 0x10),
-            ]);
+            add_bits(
+                buttons,
+                &[
+                    ("joycon_right.y", 0x01),
+                    ("joycon_right.x", 0x02),
+                    ("joycon_right.b", 0x04),
+                    ("joycon_right.a", 0x08),
+                    ("joycon_right.sr", 0x10),
+                    ("joycon_right.sl", 0x20),
+                    ("joycon_right.r", 0x40),
+                    ("joycon_right.zr", 0x80),
+                ],
+            );
+            add_bits(
+                extra,
+                &[
+                    ("joycon_right.plus", 0x02),
+                    ("joycon_right.stick_press", 0x08),
+                    ("joycon_right.home", 0x10),
+                ],
+            );
         }
         (0x3f, JOYCON_LEFT_PRODUCT_ID) => {
-            add_bits(buttons, &[
-                ("joycon_left.dpad_left", 0x01), ("joycon_left.dpad_down", 0x02),
-                ("joycon_left.dpad_up", 0x04), ("joycon_left.dpad_right", 0x08),
-                ("joycon_left.sl", 0x10), ("joycon_left.sr", 0x20),
-            ]);
-            add_bits(extra, &[
-                ("joycon_left.minus", 0x01), ("joycon_left.stick_press", 0x04),
-                ("joycon_left.capture", 0x20), ("joycon_left.l", 0x40),
-                ("joycon_left.zl", 0x80),
-            ]);
+            add_bits(
+                buttons,
+                &[
+                    ("joycon_left.dpad_left", 0x01),
+                    ("joycon_left.dpad_down", 0x02),
+                    ("joycon_left.dpad_up", 0x04),
+                    ("joycon_left.dpad_right", 0x08),
+                    ("joycon_left.sl", 0x10),
+                    ("joycon_left.sr", 0x20),
+                ],
+            );
+            add_bits(
+                extra,
+                &[
+                    ("joycon_left.minus", 0x01),
+                    ("joycon_left.stick_press", 0x04),
+                    ("joycon_left.capture", 0x20),
+                    ("joycon_left.l", 0x40),
+                    ("joycon_left.zl", 0x80),
+                ],
+            );
         }
         (0x3f, JOYCON_RIGHT_PRODUCT_ID) => {
-            add_bits(buttons, &[
-                ("joycon_right.y", 0x01), ("joycon_right.x", 0x02),
-                ("joycon_right.b", 0x04), ("joycon_right.a", 0x08),
-                ("joycon_right.sr", 0x10), ("joycon_right.sl", 0x20),
-                ("joycon_right.r", 0x40), ("joycon_right.zr", 0x80),
-            ]);
+            add_bits(
+                buttons,
+                &[
+                    ("joycon_right.y", 0x01),
+                    ("joycon_right.x", 0x02),
+                    ("joycon_right.b", 0x04),
+                    ("joycon_right.a", 0x08),
+                    ("joycon_right.sr", 0x10),
+                    ("joycon_right.sl", 0x20),
+                    ("joycon_right.r", 0x40),
+                    ("joycon_right.zr", 0x80),
+                ],
+            );
         }
         _ => {}
     }
@@ -498,9 +545,6 @@ fn dispatch_mapping_action(action: &str) -> Result<(), String> {
         "window_next" => switch_window("next".to_owned()),
         "window_previous" => switch_window("previous".to_owned()),
         "focus_codex" => focus_codex(),
-        "focus_next" => move_keyboard_focus("next"),
-        "focus_previous" => move_keyboard_focus("previous"),
-        "activate_focused" => activate_keyboard_focus(),
         _ => Err(format!("Unsupported mapping action: {action}")),
     }
 }
@@ -598,7 +642,7 @@ fn next_output_packet_counter(state: &StreamState) -> u8 {
     state.output_packet_counter.fetch_add(1, Ordering::Relaxed) & 0x0f
 }
 
-fn rumble_subcommand(counter: u8, subcommand: u8, data: u8) -> [u8; 12] {
+fn joycon_subcommand(counter: u8, subcommand: u8, data: u8) -> [u8; 12] {
     [
         0x01,
         counter & 0x0f,
@@ -615,10 +659,33 @@ fn rumble_subcommand(counter: u8, subcommand: u8, data: u8) -> [u8; 12] {
     ]
 }
 
+fn configure_joycon_motion(
+    device: &Arc<Mutex<hidapi::HidDevice>>,
+    state: &StreamState,
+) -> Result<(), String> {
+    let enable_imu = joycon_subcommand(next_output_packet_counter(state), 0x40, 0x01);
+    write_joycon_output(device, &enable_imu)
+        .map_err(|error| format!("could not enable the 6-axis sensor: {error}"))?;
+    thread::sleep(Duration::from_millis(20));
+
+    let native_reports = joycon_subcommand(next_output_packet_counter(state), 0x03, 0x30);
+    write_joycon_output(device, &native_reports)
+        .map_err(|error| format!("could not select native 0x30 reports: {error}"))?;
+    Ok(())
+}
+
 fn rumble_report(counter: u8, frame: [u8; 4]) -> [u8; 10] {
     [
-        0x10, counter & 0x0f, frame[0], frame[1], frame[2], frame[3], frame[0], frame[1],
-        frame[2], frame[3],
+        0x10,
+        counter & 0x0f,
+        frame[0],
+        frame[1],
+        frame[2],
+        frame[3],
+        frame[0],
+        frame[1],
+        frame[2],
+        frame[3],
     ]
 }
 
@@ -643,9 +710,15 @@ fn test_joycon_vibration(state: tauri::State<StreamState>, id: String) -> Result
         .get(&id)
         .cloned()
         .ok_or("Select this Joy-Con in Debug before testing vibration")?;
-    let enable = rumble_subcommand(next_output_packet_counter(state.inner()), 0x48, 0x01);
-    let pulse = rumble_report(next_output_packet_counter(state.inner()), GENTLE_RUMBLE_FRAME);
-    let neutral = rumble_report(next_output_packet_counter(state.inner()), NEUTRAL_RUMBLE_FRAME);
+    let enable = joycon_subcommand(next_output_packet_counter(state.inner()), 0x48, 0x01);
+    let pulse = rumble_report(
+        next_output_packet_counter(state.inner()),
+        GENTLE_RUMBLE_FRAME,
+    );
+    let neutral = rumble_report(
+        next_output_packet_counter(state.inner()),
+        NEUTRAL_RUMBLE_FRAME,
+    );
     write_joycon_output(&device, &enable)
         .map_err(|error| format!("Could not enable Joy-Con rumble: {error}"))?;
     thread::sleep(Duration::from_millis(120));
@@ -657,59 +730,6 @@ fn test_joycon_vibration(state: tauri::State<StreamState>, id: String) -> Result
     pulse_result?;
     neutral_result?;
     Ok(())
-}
-
-/// A deliberately small accessibility-navigation primitive. It does not read
-/// or manipulate an accessibility tree; it sends the standard keyboard focus
-/// keys to the foreground app, where normal Tab navigation is supported.
-fn move_keyboard_focus(direction: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        ensure_macos_accessibility()?;
-        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
-            .map_err(|_| "Could not create a macOS keyboard event source")?;
-        if direction == "previous" {
-            post_key(&source, 56, true, CGEventFlags::CGEventFlagShift)?;
-            post_key(&source, 48, true, CGEventFlags::CGEventFlagShift)?;
-            post_key(&source, 48, false, CGEventFlags::CGEventFlagShift)?;
-            post_key(&source, 56, false, CGEventFlags::CGEventFlagNull)?;
-        } else {
-            post_key(&source, 48, true, CGEventFlags::CGEventFlagNull)?;
-            post_key(&source, 48, false, CGEventFlags::CGEventFlagNull)?;
-        }
-        Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = direction;
-        Err("Keyboard focus navigation is not implemented for this platform yet".to_owned())
-    }
-}
-
-fn activate_keyboard_focus() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        ensure_macos_accessibility()?;
-        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
-            .map_err(|_| "Could not create a macOS keyboard event source")?;
-        // Space activates the currently focused standard macOS control.
-        post_key(&source, 49, true, CGEventFlags::CGEventFlagNull)?;
-        post_key(&source, 49, false, CGEventFlags::CGEventFlagNull)?;
-        Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("Keyboard focus activation is not implemented for this platform yet".to_owned())
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn ensure_macos_accessibility() -> Result<(), String> {
-    if macos_accessibility_trusted() {
-        Ok(())
-    } else {
-        Err("Accessibility is not granted to this running VibeCon process. Quit the app, enable VibeCon.app in System Settings → Privacy & Security → Accessibility, then reopen VibeCon.app.".to_owned())
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -824,30 +844,62 @@ fn write_mapping_config(config: &MappingConfig) -> Result<(), String> {
         .map_err(|error| format!("Could not write mapping configuration: {error}"))
 }
 
-/// Mapping config v2 adds the opt-in Keyboard Focus preset. v1 files are
-/// upgraded in place without changing their active preset or user bindings.
+/// Version 3 returns the built-in library to verified mappings only.
+/// User-created presets remain untouched; superseded built-ins are removed.
 fn migrate_mapping_config(mut config: MappingConfig) -> Result<(MappingConfig, bool), String> {
     match config.version {
         1 => {
-            if !config.presets.iter().any(|preset| preset.id == "keyboard-focus") {
-                config.presets.push(keyboard_focus_preset());
-            }
-            config.version = 2;
+            config.version = 3;
+            prune_unverified_builtins(&mut config);
             Ok((config, true))
         }
-        2 => Ok((config, false)),
+        2 => {
+            config.version = 3;
+            prune_unverified_builtins(&mut config);
+            Ok((config, true))
+        }
+        3 => Ok((config, false)),
         _ => Err("Unsupported mapping configuration version".to_owned()),
     }
 }
 
+fn prune_unverified_builtins(config: &mut MappingConfig) {
+    config
+        .presets
+        .retain(|preset| !matches!(preset.id.as_str(), "code" | "keyboard-focus"));
+    if let Some(preset) = config
+        .presets
+        .iter_mut()
+        .find(|preset| preset.id == "codex-cowork")
+    {
+        preset.bindings.retain(|binding| {
+            !matches!(
+                binding.id.as_str(),
+                "focus-vibecon-left" | "focus-vibecon-right"
+            )
+        });
+    }
+    if !config
+        .presets
+        .iter()
+        .any(|preset| preset.id == config.active_preset_id)
+    {
+        config.active_preset_id = "codex-cowork".to_owned();
+    }
+}
+
 fn validate_mapping_config(config: &MappingConfig) -> Result<(), String> {
-    if config.version != 2 {
+    if config.version != 3 {
         return Err("Unsupported mapping configuration version".to_owned());
     }
     if config.presets.is_empty() {
         return Err("At least one mapping preset is required".to_owned());
     }
-    if !config.presets.iter().any(|preset| preset.id == config.active_preset_id) {
+    if !config
+        .presets
+        .iter()
+        .any(|preset| preset.id == config.active_preset_id)
+    {
         return Err("The active mapping preset does not exist".to_owned());
     }
     let mut preset_ids = HashSet::new();
@@ -857,8 +909,13 @@ fn validate_mapping_config(config: &MappingConfig) -> Result<(), String> {
             return Err("Each mapping preset needs a unique non-empty id".to_owned());
         }
         for binding in &preset.bindings {
-            if binding.id.trim().is_empty() || !binding_ids.insert(format!("{}:{}", preset.id, binding.id)) {
-                return Err(format!("Preset {} has duplicate or empty binding ids", preset.id));
+            if binding.id.trim().is_empty()
+                || !binding_ids.insert(format!("{}:{}", preset.id, binding.id))
+            {
+                return Err(format!(
+                    "Preset {} has duplicate or empty binding ids",
+                    preset.id
+                ));
             }
             if !known_mapping_controls().contains(&binding.control.as_str()) {
                 return Err(format!("Unsupported mapping control: {}", binding.control));
@@ -873,23 +930,35 @@ fn validate_mapping_config(config: &MappingConfig) -> Result<(), String> {
 
 fn known_mapping_controls() -> &'static [&'static str] {
     &[
-        "joycon_left.stick_left", "joycon_left.stick_right",
-        "joycon_left.dpad_up", "joycon_left.dpad_down", "joycon_left.dpad_left", "joycon_left.dpad_right",
-        "joycon_left.stick_press", "joycon_left.minus", "joycon_left.capture", "joycon_left.sl", "joycon_left.sr", "joycon_left.l", "joycon_left.zl",
-        "joycon_right.x", "joycon_right.y", "joycon_right.a", "joycon_right.b",
-        "joycon_right.stick_press", "joycon_right.plus", "joycon_right.home", "joycon_right.sl", "joycon_right.sr", "joycon_right.r", "joycon_right.zr",
+        "joycon_left.stick_left",
+        "joycon_left.stick_right",
+        "joycon_left.dpad_up",
+        "joycon_left.dpad_down",
+        "joycon_left.dpad_left",
+        "joycon_left.dpad_right",
+        "joycon_left.stick_press",
+        "joycon_left.minus",
+        "joycon_left.capture",
+        "joycon_left.sl",
+        "joycon_left.sr",
+        "joycon_left.l",
+        "joycon_left.zl",
+        "joycon_right.x",
+        "joycon_right.y",
+        "joycon_right.a",
+        "joycon_right.b",
+        "joycon_right.stick_press",
+        "joycon_right.plus",
+        "joycon_right.home",
+        "joycon_right.sl",
+        "joycon_right.sr",
+        "joycon_right.r",
+        "joycon_right.zr",
     ]
 }
 
 fn known_mapping_actions() -> &'static [&'static str] {
-    &[
-        "window_previous",
-        "window_next",
-        "focus_codex",
-        "focus_next",
-        "focus_previous",
-        "activate_focused",
-    ]
+    &["window_previous", "window_next", "focus_codex"]
 }
 
 #[tauri::command]
@@ -898,8 +967,12 @@ fn load_mapping_config() -> Result<MappingConfig, String> {
     if path.exists() {
         let content = fs::read_to_string(&path)
             .map_err(|error| format!("Could not read mapping configuration: {error}"))?;
-        let config: MappingConfig = serde_json::from_str(&content)
-            .map_err(|error| format!("Invalid mapping configuration in {}: {error}", path.display()))?;
+        let config: MappingConfig = serde_json::from_str(&content).map_err(|error| {
+            format!(
+                "Invalid mapping configuration in {}: {error}",
+                path.display()
+            )
+        })?;
         let (config, migrated) = migrate_mapping_config(config)?;
         validate_mapping_config(&config)?;
         if migrated {
@@ -912,7 +985,10 @@ fn load_mapping_config() -> Result<MappingConfig, String> {
         let content = fs::read_to_string(&legacy_path)
             .map_err(|error| format!("Could not read legacy mapping settings: {error}"))?;
         migrated_mapping_config(serde_json::from_str(&content).map_err(|error| {
-            format!("Invalid legacy mapping settings in {}: {error}", legacy_path.display())
+            format!(
+                "Invalid legacy mapping settings in {}: {error}",
+                legacy_path.display()
+            )
         })?)
     } else {
         MappingConfig::default()
@@ -982,7 +1058,12 @@ fn save_annotation(draft: AnnotationDraft) -> Result<Annotation, String> {
 fn decode_joycon_report(
     bytes: &[u8],
     product_id: u16,
-) -> (Option<Stick>, Option<Stick>, Option<[u8; 3]>, Option<ImuSample>) {
+) -> (
+    Option<Stick>,
+    Option<Stick>,
+    Option<[u8; 3]>,
+    Option<ImuSample>,
+) {
     if bytes.len() >= 12 && bytes[0] == 0x3f {
         let decode_macos_axis = |offset: usize| {
             let x = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
@@ -1019,9 +1100,19 @@ fn decode_joycon_report(
         let hat_stick = stick_from_hat(bytes[3]);
         let axes_stick = decode_macos_axis(4);
         return if product_id == JOYCON_RIGHT_PRODUCT_ID {
-            (Some(axes_stick), Some(hat_stick), Some([bytes[1], bytes[2], bytes[3]]), None)
+            (
+                Some(axes_stick),
+                Some(hat_stick),
+                Some([bytes[1], bytes[2], bytes[3]]),
+                None,
+            )
         } else {
-            (Some(hat_stick), Some(axes_stick), Some([bytes[1], bytes[2], bytes[3]]), None)
+            (
+                Some(hat_stick),
+                Some(axes_stick),
+                Some([bytes[1], bytes[2], bytes[3]]),
+                None,
+            )
         };
     }
     if bytes.len() < 12 || bytes[0] != 0x30 {
@@ -1096,16 +1187,31 @@ mod tests {
     }
 
     #[test]
-    fn v1_mapping_config_migrates_keyboard_focus_without_changing_active_preset() {
+    fn v2_mapping_config_prunes_unverified_builtins() {
         let mut config = MappingConfig::default();
-        config.version = 1;
-        config.presets.retain(|preset| preset.id != "keyboard-focus");
+        config.version = 2;
+        config.presets.push(MappingPreset {
+            id: "keyboard-focus".to_owned(),
+            name: "Keyboard Focus".to_owned(),
+            enabled: false,
+            bindings: vec![],
+        });
+        config.presets.push(MappingPreset {
+            id: "code".to_owned(),
+            name: "Code".to_owned(),
+            enabled: true,
+            bindings: vec![],
+        });
         config.active_preset_id = "code".to_owned();
-        let (config, migrated) = migrate_mapping_config(config).expect("v1 config migrates");
+        let (config, migrated) = migrate_mapping_config(config).expect("v2 config migrates");
         assert!(migrated);
-        assert_eq!(config.version, 2);
-        assert_eq!(config.active_preset_id, "code");
-        assert!(config.presets.iter().any(|preset| preset.id == "keyboard-focus"));
+        assert_eq!(config.version, 3);
+        assert_eq!(config.active_preset_id, "codex-cowork");
+        assert!(!config
+            .presets
+            .iter()
+            .any(|preset| preset.id == "keyboard-focus"));
+        assert!(!config.presets.iter().any(|preset| preset.id == "code"));
         assert!(validate_mapping_config(&config).is_ok());
     }
 
@@ -1138,11 +1244,22 @@ mod tests {
 
     #[test]
     fn rumble_enable_subcommand_has_neutral_frames() {
-        let report = rumble_subcommand(0x1f, 0x48, 0x01);
+        let report = joycon_subcommand(0x1f, 0x48, 0x01);
         assert_eq!(report[0], 0x01);
         assert_eq!(report[1], 0x0f);
-        assert_eq!(&report[2..10], &[0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40]);
+        assert_eq!(
+            &report[2..10],
+            &[0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40]
+        );
         assert_eq!(&report[10..], &[0x48, 0x01]);
+    }
+
+    #[test]
+    fn motion_initialization_subcommands_enable_imu_and_native_reports() {
+        let enable_imu = joycon_subcommand(0x02, 0x40, 0x01);
+        let native_reports = joycon_subcommand(0x03, 0x03, 0x30);
+        assert_eq!(&enable_imu[10..], &[0x40, 0x01]);
+        assert_eq!(&native_reports[10..], &[0x03, 0x30]);
     }
 
     #[test]

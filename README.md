@@ -59,7 +59,7 @@ Before it automates anything, VibeCon makes the controller observable: raw HID r
 - Visualize both Joy-Cons in CSS: sticks move live; held controls glow and taps briefly persist as afterglow.
 - Choose a log policy: key operations, legacy 75 ms snapshots, 60/30/10 Hz samples, or every report; clear the visible log whenever needed.
 - Label captured reports as stick positions or button press/release samples. Labels are stored locally in `~/.vibecon/annotations.jsonl` and shown again for matching reports.
-- **Preset-based macOS mappings:** choose **Code**, **Codex Cowork**, **Inspect Only**, or the opt-in **Keyboard Focus** experiment. The first two can switch windows with left-stick right/left and focus Codex with Joy-Con (L) D-pad Up / Joy-Con (R) X. Keyboard Focus sends Tab / Shift+Tab / Space to the foreground app. Every preset and binding is opt-in, stored in `~/.vibecon/mappings.json`, and inactive on the Debug page.
+- **Verified macOS mappings:** **Codex Cowork** uses the Joy-Con (L) stick left/right to switch windows and Joy-Con (L) D-pad Up / Joy-Con (R) X to focus Codex. **Inspect Only** deliberately sends no actions. Every binding is opt-in, stored in `~/.vibecon/mappings.json`, and inactive on the Debug page. New actions are added only after real-device verification.
 - **Experimental Joy-Con output:** a manual, short **Test selected Joy-Con vibration** pulse is available on Mappings. It is never triggered from a binding or task event, and any HID write failure is shown instead of retried.
 
 ### Observed Joy-Con notes
@@ -85,16 +85,15 @@ Pair a Joy-Con from **System Settings → Bluetooth** first. In VibeCon, click *
 ## Configure macOS mappings
 
 1. On **Debug**, select the controller you want to use. Select both Joy-Cons if you want both Codex-focus shortcuts.
-2. Open **Mappings**, choose a preset, then enable its master switch and any bindings you want. **Code** offers window navigation; **Codex Cowork** adds the two Codex-focus buttons; **Inspect Only** deliberately sends no macOS actions; **Keyboard Focus** sends Tab / Shift+Tab / Space to the foreground app. Debug rendering and logging pause while this page is active, but the HID reader remains active for mappings.
+2. Open **Mappings**, choose **Codex Cowork**, then enable its master switch and individual verified bindings as needed. **Inspect Only** deliberately sends no macOS actions. Debug rendering and logging pause while this page is active, but the HID reader remains active for mappings.
 3. For window switching, grant **Accessibility** to VibeCon. The Mappings page can open the exact System Settings pane if it is missing.
 
 Window switching posts a native macOS Quartz shortcut, so **Accessibility** is the only permission it requires. Focusing Codex uses the macOS application launcher and does not require Accessibility.
 
 ### Edit a preset with an agent
 
-Mappings are readable JSON at `~/.vibecon/mappings.json`. The **Copy Agent Prompt** button gives a coding agent the schema and safety boundary. VibeCon accepts only its known Joy-Con controls and these safe actions: `window_previous`, `window_next`, `focus_codex`, `focus_next`, `focus_previous`, and `activate_focused`; it never runs arbitrary shell commands from a mapping file. **Reset defaults** restores the four built-in presets.
+Mappings are readable JSON at `~/.vibecon/mappings.json`. The **Copy Agent Prompt** button gives a coding agent the schema and safety boundary. VibeCon accepts only its known Joy-Con controls and the verified actions `window_previous`, `window_next`, and `focus_codex`; it never runs arbitrary shell commands from a mapping file. **Reset defaults** restores the verified built-ins.
 
-Keyboard Focus is deliberately keyboard-based rather than a full accessibility-tree controller: it works wherever the foreground app supports standard Tab navigation and is subject to that app's own focus rules.
 
 ## Development
 
