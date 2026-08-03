@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import JoyCon from "./JoyCon.vue";
 import ThreeJoyCon from "./ThreeJoyCon.vue";
 import type { Controller, ImuSample, InputReport, Label, LogEntry, Stick } from "../types";
 
@@ -12,13 +11,10 @@ const props = defineProps<{
   status: string;
   statusKind: "" | "connected" | "error";
   activeControls: string[];
-  recentControls: string[];
   leftStick: Stick | null;
   rightStick: Stick | null;
   leftImu: ImuSample | null;
   rightImu: ImuSample | null;
-  nubTransform: string;
-  rightNubTransform: string;
   buttonsReadout: string;
   sampleRate: string;
   groupedLogs: LogGroup[];
@@ -41,20 +37,15 @@ const { t } = useI18n();
 const threeFollowMotion = ref(false);
 const threeResetKey = ref(0);
 const inspectionView = ref<"front" | "rail" | "shoulder">("front");
-const previewControl = ref<string | null>(null);
-const leftInspectionControls = [
-  "stick_press", "dpad_up", "dpad_right", "dpad_down", "dpad_left",
-  "minus", "capture", "l", "zl", "sl", "sr",
-];
-const rightInspectionControls = [
-  "x", "a", "b", "y", "stick_press", "plus", "home",
-  "r", "zr", "sl", "sr",
-];
-const threeActiveControls = computed(() =>
-  previewControl.value
-    ? [...new Set([...props.activeControls, previewControl.value])]
-    : props.activeControls,
+const storedSensitivity = Number(localStorage.getItem("vibecon.motion.pointerSensitivity"));
+const motionSensitivity = ref(
+  Number.isFinite(storedSensitivity) && storedSensitivity >= 1 && storedSensitivity <= 30
+    ? storedSensitivity
+    : 8,
 );
+watch(motionSensitivity, (value) => {
+  localStorage.setItem("vibecon.motion.pointerSensitivity", String(value));
+});
 const maxVisibleLogEntries = 32;
 const totalLogEntries = computed(() =>
   props.groupedLogs.reduce((total, group) => total + group.entries.length, 0),
@@ -104,58 +95,41 @@ function resetThreePose() {
     </div>
   </section>
 
-  <section class="visualizer panel">
+  <section class="visualizer panel three-debug-panel">
     <div class="section-heading">
       <div>
         <h2 class="section-title">{{ t("debug.live") }}</h2>
-        <p class="hint">{{ t("debug.visualizerHint") }}</p>
-      </div>
-      <output class="raw-buttons">{{ buttonsReadout }}</output>
-    </div>
-    <div class="joycon-stage">
-      <JoyCon :active-controls="activeControls" :recent-controls="recentControls" :nub-transform="nubTransform" />
-      <div class="axis-readout">
-        <span class="readout-label">{{ t("debug.primaryStick") }}</span><output class="axis-output">{{ renderStick(leftStick) }}</output>
-        <span class="readout-label">{{ t("debug.secondaryAxes") }}</span><output class="axis-output">{{ renderStick(rightStick) }}</output>
-        <span class="readout-label">{{ t("debug.leftImu") }}</span><output class="axis-output imu-output">{{ renderImu(leftImu) }}</output>
-        <span class="readout-label">{{ t("debug.rightImu") }}</span><output class="axis-output imu-output">{{ renderImu(rightImu) }}</output>
-      </div>
-      <JoyCon side="right" :active-controls="activeControls" :recent-controls="recentControls" :nub-transform="rightNubTransform" />
-    </div>
-  </section>
-
-  <section class="panel three-debug-panel">
-    <div class="section-heading">
-      <div>
-        <h2 class="section-title">{{ t("debug.threeTitle") }}</h2>
         <p class="hint">{{ t("debug.threeHint") }}</p>
       </div>
-      <div class="three-debug-actions">
-        <div class="three-view-switcher" :aria-label="t('debug.threeView')">
-          <button v-for="view in (['front', 'rail', 'shoulder'] as const)" :key="view" type="button" :class="{ active: inspectionView === view }" @click="inspectionView = view">{{ t(`debug.threeView_${view}`) }}</button>
+      <div class="three-header-tools">
+        <output class="raw-buttons">{{ buttonsReadout }}</output>
+        <div class="three-debug-actions">
+          <div class="three-view-switcher" :aria-label="t('debug.threeView')">
+            <button v-for="view in (['front', 'rail', 'shoulder'] as const)" :key="view" type="button" :class="{ active: inspectionView === view }" @click="inspectionView = view">{{ t(`debug.threeView_${view}`) }}</button>
+          </div>
+          <label class="switch-control compact">
+            <input v-model="threeFollowMotion" type="checkbox" />
+            <span class="switch-track" aria-hidden="true"></span>
+            <span>{{ t("debug.threeFollowMotion") }}</span>
+          </label>
+          <label class="motion-sensitivity compact">
+            <span>{{ t("debug.threeSensitivity") }}</span>
+            <input v-model.number="motionSensitivity" type="range" min="1" max="30" step="1" />
+            <output>{{ motionSensitivity }}×</output>
+          </label>
+          <button class="secondary" type="button" @click="resetThreePose">{{ t("debug.threeReset") }}</button>
         </div>
-        <label class="switch-control compact">
-          <input v-model="threeFollowMotion" type="checkbox" />
-          <span class="switch-track" aria-hidden="true"></span>
-          <span>{{ t("debug.threeFollowMotion") }}</span>
-        </label>
-        <button class="secondary" type="button" @click="resetThreePose">{{ t("debug.threeReset") }}</button>
       </div>
     </div>
     <div class="three-joycon-stage">
-      <ThreeJoyCon side="left" :imu="leftImu" :stick="leftStick" :active-controls="threeActiveControls" :follow-motion="threeFollowMotion" :reset-key="threeResetKey" :inspection-view="inspectionView" />
+      <ThreeJoyCon side="left" :imu="leftImu" :stick="leftStick" :active-controls="activeControls" :follow-motion="threeFollowMotion" :sensitivity="motionSensitivity" :reset-key="threeResetKey" :inspection-view="inspectionView" />
       <div class="axis-readout three-axis-readout">
-        <span class="readout-label">{{ t("debug.threeInspect") }}</span>
-        <div class="three-inspection-controls">
-          <button v-for="name in leftInspectionControls" :key="`left-${name}`" type="button" @mouseenter="previewControl = `joycon_left.${name}`" @focus="previewControl = `joycon_left.${name}`" @mouseleave="previewControl = null" @blur="previewControl = null">L {{ name }}</button>
-          <button v-for="name in rightInspectionControls" :key="`right-${name}`" type="button" @mouseenter="previewControl = `joycon_right.${name}`" @focus="previewControl = `joycon_right.${name}`" @mouseleave="previewControl = null" @blur="previewControl = null">R {{ name }}</button>
-        </div>
         <span class="readout-label">{{ t("debug.primaryStick") }}</span><output class="axis-output">{{ renderStick(leftStick) }}</output>
         <span class="readout-label">{{ t("debug.secondaryAxes") }}</span><output class="axis-output">{{ renderStick(rightStick) }}</output>
         <span class="readout-label">{{ t("debug.leftImu") }}</span><output class="axis-output imu-output">{{ renderImu(leftImu) }}</output>
         <span class="readout-label">{{ t("debug.rightImu") }}</span><output class="axis-output imu-output">{{ renderImu(rightImu) }}</output>
       </div>
-      <ThreeJoyCon side="right" :imu="rightImu" :stick="rightStick" :active-controls="threeActiveControls" :follow-motion="threeFollowMotion" :reset-key="threeResetKey" :inspection-view="inspectionView" />
+      <ThreeJoyCon side="right" :imu="rightImu" :stick="rightStick" :active-controls="activeControls" :follow-motion="threeFollowMotion" :sensitivity="motionSensitivity" :reset-key="threeResetKey" :inspection-view="inspectionView" />
     </div>
   </section>
 

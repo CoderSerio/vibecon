@@ -6,7 +6,6 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import JoyCon from "./components/JoyCon.vue";
 import DebugPage from "./components/DebugPage.vue";
 import MappingsPage from "./components/MappingsPage.vue";
-import MotionPage from "./components/MotionPage.vue";
 import { isAppLocale, LOCALE_STORAGE_KEY, type AppLocale } from "./i18n";
 import type { Controller, ImuSample, InputReport, Label, LogEntry, MappingConfig, Stick } from "./types";
 import { RingBuffer } from "./utils/ring-buffer";
@@ -43,7 +42,7 @@ function defaultMappingConfig(): MappingConfig {
 
 const isTauriDesktop = "__TAURI_INTERNALS__" in window;
 const { t, locale } = useI18n();
-const activePage = ref<"debug" | "motion" | "mappings">("debug");
+const activePage = ref<"debug" | "mappings">("debug");
 const mappingConfig = ref<MappingConfig>(defaultMappingConfig());
 const controllers = ref<Controller[]>([]);
 const selectedControllers = ref<Controller[]>([]);
@@ -841,12 +840,6 @@ onBeforeUnmount(() => {
         {{ t("app.debug") }}</button
       ><button
         class="app-button tab"
-        :class="{ selected: activePage === 'motion' }"
-        @click="activePage = 'motion'"
-      >
-        {{ t("app.motion") }}</button
-      ><button
-        class="app-button tab"
         :class="{ selected: activePage === 'mappings' }"
         @click="activePage = 'mappings'"
       >
@@ -867,11 +860,6 @@ onBeforeUnmount(() => {
       @open-accessibility="openAccessibilitySettings"
       @reset="resetMappingConfig"
     />
-    <MotionPage
-      v-if="activePage === 'motion'"
-      :left-imu="leftImu"
-      :right-imu="rightImu"
-    />
     <DebugPage
       v-if="activePage === 'debug'"
       :controllers="controllers"
@@ -879,13 +867,10 @@ onBeforeUnmount(() => {
       :status="status"
       :status-kind="statusKind"
       :active-controls="activeControls"
-      :recent-controls="recentControls"
       :left-stick="leftStick"
       :right-stick="rightStick"
       :left-imu="leftImu"
       :right-imu="rightImu"
-      :nub-transform="nubTransform"
-      :right-nub-transform="rightNubTransform"
       :buttons-readout="buttonsReadout"
       :sample-rate="sampleRate"
       :grouped-logs="groupedLogs"

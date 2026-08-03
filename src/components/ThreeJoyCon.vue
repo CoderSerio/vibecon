@@ -12,6 +12,7 @@ const props = defineProps<{
   stick: Stick | null;
   activeControls: string[];
   followMotion: boolean;
+  sensitivity: number;
   resetKey: number;
   inspectionView: "front" | "rail" | "shoulder";
 }>();
@@ -24,11 +25,13 @@ const modelUrl = props.side === "left"
   ? new URL("../assets/models/joycon-left.interactive.glb", import.meta.url).href
   : new URL("../assets/models/joycon-right.interactive.glb", import.meta.url).href;
 const tracker = new MotionPoseTracker(props.side);
+let latestPose = tracker.update(null);
 
 let renderer: THREE.WebGLRenderer | undefined;
 let scene: THREE.Scene | undefined;
 let camera: THREE.PerspectiveCamera | undefined;
 let joycon: THREE.Group | undefined;
+let baseModelPosition = new THREE.Vector3();
 let modelDiameter = 1;
 let disposed = false;
 // After glTF's Y-up conversion the full-switch export already has its long
@@ -446,25 +449,35 @@ watch(
   requestRender,
 );
 
+function applyTrackedPose() {
+  if (!joycon) return;
+  if (!props.followMotion) {
+    joycon.rotation.copy(baseModelRotation);
+    joycon.position.copy(baseModelPosition);
+    return;
+  }
+  const pose = latestPose;
+  joycon.rotation.set(
+    baseModelRotation.x + THREE.MathUtils.degToRad(pose.rotateX * props.sensitivity / 8),
+    baseModelRotation.y + THREE.MathUtils.degToRad(pose.rotateY * props.sensitivity / 8),
+    baseModelRotation.z + THREE.MathUtils.degToRad(pose.rotateZ * props.sensitivity / 8),
+  );
+  joycon.position.copy(baseModelPosition);
+  requestRender();
+}
+
 watch(
   () => props.imu,
   (sample) => {
-    const pose = tracker.update(sample);
-    if (!joycon) return;
-    if (!props.followMotion) {
-      tracker.resetUpright();
-      joycon.rotation.copy(baseModelRotation);
-      return;
-    }
-    joycon.rotation.set(
-      baseModelRotation.x + THREE.MathUtils.degToRad(pose.rotateX),
-      baseModelRotation.y + THREE.MathUtils.degToRad(pose.rotateY),
-      baseModelRotation.z + THREE.MathUtils.degToRad(pose.rotateZ),
-    );
+    latestPose = tracker.update(sample);
+    if (!props.followMotion) tracker.resetUpright();
+    applyTrackedPose();
     requestRender();
   },
   { immediate: true },
 );
+
+watch(() => props.sensitivity, applyTrackedPose);
 
 watch(
   () => props.followMotion,
@@ -472,6 +485,7 @@ watch(
     if (enabled) return;
     tracker.resetUpright();
     joycon?.rotation.copy(baseModelRotation);
+    if (joycon) joycon.position.copy(baseModelPosition);
     requestRender();
   },
 );
@@ -481,6 +495,7 @@ watch(
   () => {
     tracker.resetUpright();
     joycon?.rotation.copy(baseModelRotation);
+    if (joycon) joycon.position.copy(baseModelPosition);
     requestRender();
   },
 );
@@ -521,10 +536,24 @@ onMounted(() => {
         disposeObjectTree(gltf.scene);
         return;
       }
-      joycon = gltf.scene;
-      joycon.scale.setScalar(2.9);
+      const model = gltf.scene;
+      model.scale.setScalar(2.9);
+      model.updateMatrixWorld(true);
+      const bounds = new THREE.Box3().setFromObject(model);
+      const center = bounds.getCenter(new THREE.Vector3());
+      const size = bounds.getSize(new THREE.Vector3());
+
+      // Rotate a centered parent instead of the translated GLTF scene itself.
+      // Otherwise the model's off-center export origin makes it orbit around
+      // the canvas when motion tracking changes its rotation.
+      model.position.sub(center);
+      joycon = new THREE.Group();
+      joycon.name = `VibeCon_${props.side}_RotationPivot`;
       joycon.rotation.copy(baseModelRotation);
-      joycon.traverse((node) => {
+      joycon.add(model);
+      baseModelPosition.copy(joycon.position);
+
+      model.traverse((node) => {
         nodes.set(node.name, node);
         basePositions.set(node.name, node.position.clone());
         baseRotations.set(node.name, node.rotation.clone());
@@ -554,13 +583,6 @@ onMounted(() => {
           node.receiveShadow = true;
         }
       });
-      // Normalize both mirrored GLBs into the same camera framing. The left
-      // asset contains a negative mirror scale, so relying on a fixed camera
-      // distance makes that side appear clipped even when its bounds match.
-      const bounds = new THREE.Box3().setFromObject(joycon);
-      const center = bounds.getCenter(new THREE.Vector3());
-      const size = bounds.getSize(new THREE.Vector3());
-      joycon.position.sub(center);
       modelDiameter = Math.max(size.x, size.y, size.z);
       applyInspectionView();
       createSurfaceHighlightTargets(size);
@@ -599,6 +621,7 @@ onBeforeUnmount(() => {
   surfaceHighlightShaders.clear();
   scene?.clear();
   joycon = undefined;
+  baseModelPosition.set(0, 0, 0);
   scene = undefined;
   camera = undefined;
   renderer = undefined;
@@ -609,7 +632,9 @@ onBeforeUnmount(() => {
   <article class="three-joycon" :class="side">
     <header>
       <strong>JOY-CON ({{ side === "left" ? "L" : "R" }}) · 3D</strong>
-      <span :title="diagnostics">{{ status }} · {{ diagnostics }}</span>
+      <span class="three-model-status" :title="diagnostics">
+        <i aria-hidden="true"></i>{{ status }}
+      </span>
     </header>
     <div ref="host" class="three-joycon-canvas" />
   </article>

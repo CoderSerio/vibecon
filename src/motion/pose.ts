@@ -10,8 +10,10 @@ export type MotionPose = {
 const GYRO_COUNTS_PER_DEGREE_PER_SECOND = 16.4;
 const MAX_STEP_SECONDS = 0.05;
 const CALIBRATION_WINDOW_MS = 450;
-const STATIONARY_GYRO_THRESHOLD = 110;
-const GYRO_DEADBAND = 10;
+const STATIONARY_GYRO_THRESHOLD = 160;
+const GYRO_DEADBAND = 35;
+const ACCEL_COUNTS_PER_G = 4096;
+const ACCEL_GRAVITY_TOLERANCE = 650;
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
@@ -37,6 +39,7 @@ const emptyPose = (): MotionPose => ({
  * slowly because a Joy-Con has no absolute heading reference.
  */
 export class MotionPoseTracker {
+  private readonly side: "left" | "right";
   private orientation = { x: 0, y: 0, z: 0 };
   private zero = { x: 0, y: 0, z: 0 };
   private gyroBias: [number, number, number] = [0, 0, 0];
@@ -48,7 +51,9 @@ export class MotionPoseTracker {
   private gravityInitialized = false;
   private pose = emptyPose();
 
-  constructor(private readonly side: "left" | "right") {}
+  constructor(side: "left" | "right") {
+    this.side = side;
+  }
 
   update(sample: ImuSample | null, now = performance.now()): MotionPose {
     if (!sample) {
@@ -65,7 +70,7 @@ export class MotionPoseTracker {
 
     const elapsed = clamp((now - this.lastUpdatedAt) / 1000, 0, MAX_STEP_SECONDS);
     this.lastUpdatedAt = now;
-    const [ax] = sample.acceleration;
+    const [ax, ay, az] = sample.acceleration;
     const [gx, gy, gz] = sample.gyroscope;
     this.lastGyroscope = [gx, gy, gz];
     if (this.calibrationUntil > 0) {
@@ -104,22 +109,26 @@ export class MotionPoseTracker {
       Math.abs(gz - this.gyroBias[2]) < GYRO_DEADBAND ? 0 : gz - this.gyroBias[2],
     ];
 
-    // Preserve the axes already verified by the direct preview, but integrate
-    // degrees/second instead of treating velocity as an absolute angle.
-    this.orientation.x += (corrected[1] / GYRO_COUNTS_PER_DEGREE_PER_SECOND) * elapsed;
-    this.orientation.y += (corrected[0] * mirrored / GYRO_COUNTS_PER_DEGREE_PER_SECOND) * elapsed;
+    // The native report already presents sensor X/Y/Z in order. Keep those
+    // axes aligned with the model instead of crossing X and Y: crossing them
+    // makes a forward/backward pitch appear as an orthogonal sideways turn.
+    this.orientation.x += (corrected[0] / GYRO_COUNTS_PER_DEGREE_PER_SECOND) * elapsed;
+    this.orientation.y += (corrected[1] * mirrored / GYRO_COUNTS_PER_DEGREE_PER_SECOND) * elapsed;
     this.orientation.z += (corrected[2] * mirrored / GYRO_COUNTS_PER_DEGREE_PER_SECOND) * elapsed;
 
     // Accelerometer gravity gives an absolute reference for two axes. Blend
     // it in gently so movement remains gyro-smooth while long-term tilt drift
     // is corrected. It cannot correct yaw, which has no absolute reference.
-    const gravityX = Math.atan2(ax, Math.hypot(sample.acceleration[1], sample.acceleration[2])) * 180 / Math.PI;
-    const gravityY = Math.atan2(sample.acceleration[1], sample.acceleration[2]) * 180 / Math.PI * mirrored;
-    if (!this.gravityInitialized) {
+    const gravityX = Math.atan2(ay, az) * 180 / Math.PI;
+    const gravityY = Math.atan2(-ax, Math.hypot(ay, az)) * 180 / Math.PI * mirrored;
+    const accelerationMagnitude = Math.hypot(ax, ay, az);
+    const gravityIsReliable =
+      Math.abs(accelerationMagnitude - ACCEL_COUNTS_PER_G) <= ACCEL_GRAVITY_TOLERANCE;
+    if (!this.gravityInitialized && gravityIsReliable) {
       this.orientation.x = gravityX;
       this.orientation.y = gravityY;
       this.gravityInitialized = true;
-    } else {
+    } else if (gravityIsReliable) {
       this.orientation.x += (gravityX - this.orientation.x) * 0.018;
       this.orientation.y += (gravityY - this.orientation.y) * 0.018;
     }

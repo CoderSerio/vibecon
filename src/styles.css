@@ -858,6 +858,12 @@ p {
   align-items: center;
   gap: 10px;
 }
+.three-header-tools {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 9px;
+}
 .three-view-switcher {
   display: flex;
   overflow: hidden;
@@ -917,39 +923,25 @@ p {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.three-model-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.three-model-status i {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+}
 .three-joycon-canvas {
   min-height: 372px;
   width: 100%;
 }
 .three-axis-readout {
   align-self: center;
-}
-.three-inspection-controls {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
-  max-height: 172px;
-  overflow: auto;
-}
-.three-inspection-controls button {
-  overflow: hidden;
-  border: 1px solid #355851;
-  border-radius: 5px;
-  padding: 4px 5px;
-  color: #9fc5bb;
-  background: #10211e;
-  font: 9px ui-monospace, SFMono-Regular, Menlo, monospace;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: crosshair;
-}
-.three-inspection-controls button:hover,
-.three-inspection-controls button:focus-visible {
-  border-color: #7de6c4;
-  color: #e3fff7;
-  background: #1d443b;
-  outline: none;
 }
 .transcript-panel {
   margin-top: 14px;
@@ -1379,6 +1371,14 @@ select {
   .three-joycon-stage {
     grid-template-columns: 1fr;
     min-height: auto;
+  }
+  .three-debug-panel > .section-heading,
+  .three-header-tools {
+    align-items: stretch;
+  }
+  .three-debug-panel > .section-heading,
+  .three-debug-actions {
+    flex-direction: column;
   }
   .three-axis-readout {
     order: 0;
