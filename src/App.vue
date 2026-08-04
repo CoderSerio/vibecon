@@ -7,7 +7,16 @@ import JoyCon from "./components/JoyCon.vue";
 import DebugPage from "./components/DebugPage.vue";
 import MappingsPage from "./components/MappingsPage.vue";
 import { isAppLocale, LOCALE_STORAGE_KEY, type AppLocale } from "./i18n";
-import type { Controller, ImuSample, InputReport, Label, LogEntry, MappingConfig, Stick } from "./types";
+import type {
+  Controller,
+  ImuSample,
+  InputReport,
+  Label,
+  LogEntry,
+  MappingConfig,
+  OrientationFrame,
+  Stick,
+} from "./types";
 import { RingBuffer } from "./utils/ring-buffer";
 type Annotation = {
   version: number;
@@ -17,7 +26,11 @@ type Annotation = {
   report: { report_id: number; bytes: number[] };
   label: Label;
 };
-type StreamEvent = { device_id: string; report: InputReport };
+type StreamEvent = {
+  device_id: string;
+  report: InputReport;
+  orientation: OrientationFrame | null;
+};
 
 function defaultMappingConfig(): MappingConfig {
   return {
@@ -56,6 +69,8 @@ const leftStick = ref<Stick | null>(null);
 const rightStick = ref<Stick | null>(null);
 const leftImu = ref<ImuSample | null>(null);
 const rightImu = ref<ImuSample | null>(null);
+const leftOrientation = ref<OrientationFrame | null>(null);
+const rightOrientation = ref<OrientationFrame | null>(null);
 const activeControlsBySide = ref({
   left: [] as string[],
   right: [] as string[],
@@ -400,16 +415,22 @@ function shouldLog(report: InputReport, deviceId: string) {
   lastPresentedAt.set(deviceId, performance.now());
   return true;
 }
-function applyReport(report: InputReport, controller: Controller) {
+function applyReport(
+  report: InputReport,
+  controller: Controller,
+  orientation: OrientationFrame | null,
+) {
   const side = controller.product_id === 0x2007 ? "right" : "left";
   // IMU samples feed Motion Lab on every page. The previous guard below made
   // the visualizer retain only the sample present when the page was mounted.
   if (side === "left") {
     leftStick.value = report.left_stick;
     leftImu.value = report.imu;
+    if (orientation) leftOrientation.value = orientation;
   } else {
     rightStick.value = report.right_stick;
     rightImu.value = report.imu;
+    if (orientation) rightOrientation.value = orientation;
   }
   // Mapping only needs the stick direction. Keep button decoding, logs, and
   // debug readouts dormant outside the Debug page.
@@ -689,6 +710,13 @@ function selectController(controller: Controller) {
     selectedControllers.value = selectedControllers.value.filter(
       ({ id }) => id !== controller.id,
     );
+    if (controller.product_id === 0x2007) {
+      rightOrientation.value = null;
+      rightImu.value = null;
+    } else {
+      leftOrientation.value = null;
+      leftImu.value = null;
+    }
     void invoke("stop_joycon_stream", { id: controller.id });
   } else {
     selectedControllers.value = [...selectedControllers.value, controller];
@@ -798,7 +826,7 @@ onMounted(async () => {
       ({ id }) => id === payload.device_id,
     );
     if (!controller) return;
-    applyReport(payload.report, controller);
+    applyReport(payload.report, controller, payload.orientation);
     if (activePage.value !== "debug") return;
     const previous = lastIncomingReport.get(payload.device_id);
     lastIncomingReport.set(payload.device_id, payload.report);
@@ -871,6 +899,8 @@ onBeforeUnmount(() => {
       :right-stick="rightStick"
       :left-imu="leftImu"
       :right-imu="rightImu"
+      :left-orientation="leftOrientation"
+      :right-orientation="rightOrientation"
       :buttons-readout="buttonsReadout"
       :sample-rate="sampleRate"
       :grouped-logs="groupedLogs"

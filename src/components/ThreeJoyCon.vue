@@ -3,12 +3,17 @@ import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import type { ImuSample, Stick } from "../types";
+import type { ImuSample, OrientationFrame, Stick } from "../types";
 import { MotionPoseTracker } from "../motion/pose";
+import {
+  JOYCON_GLB_AXES_IN_TRACKER,
+  relativeTrackerQuaternion,
+} from "../motion/tracker-coordinate";
 
 const props = defineProps<{
   side: "left" | "right";
   imu: ImuSample | null;
+  orientation: OrientationFrame | null;
   stick: Stick | null;
   activeControls: string[];
   followMotion: boolean;
@@ -31,12 +36,20 @@ let renderer: THREE.WebGLRenderer | undefined;
 let scene: THREE.Scene | undefined;
 let camera: THREE.PerspectiveCamera | undefined;
 let joycon: THREE.Group | undefined;
+let modelMount: THREE.Group | undefined;
 let baseModelPosition = new THREE.Vector3();
 let modelDiameter = 1;
 let disposed = false;
-// After glTF's Y-up conversion the full-switch export already has its long
-// axis on Y and its front normal toward +X, matching the shared camera.
+// Live tracker orientation always starts from identity. The GLB's permanent
+// mounting transform lives on modelMount, never in the sensor pose.
 const baseModelRotation = new THREE.Euler(0, 0, 0);
+const glbToTrackerRotation = new THREE.Quaternion().setFromRotationMatrix(
+  new THREE.Matrix4().makeBasis(
+    new THREE.Vector3(...JOYCON_GLB_AXES_IN_TRACKER.x),
+    new THREE.Vector3(...JOYCON_GLB_AXES_IN_TRACKER.y),
+    new THREE.Vector3(...JOYCON_GLB_AXES_IN_TRACKER.z),
+  ),
+);
 let resizeObserver: ResizeObserver | undefined;
 let frameId = 0;
 const nodes = new Map<string, THREE.Object3D>();
@@ -51,6 +64,9 @@ const highlightLocalTargets = new Map<string, THREE.Vector3>();
 const surfaceHighlightShaders = new Map<THREE.Material, THREE.Shader>();
 let highlightScale = 1;
 let highlightFrontX = 0;
+let orientationDiagnostics = "orientation —";
+let latestFusionOrientation: THREE.Quaternion | undefined;
+let zeroFusionOrientation: THREE.Quaternion | undefined;
 // One side has at most eleven distinct controls. Keeping enough uniforms for
 // all of them means combined presses are never silently truncated.
 const maxSurfaceHighlights = 11;
@@ -262,7 +278,7 @@ totalEmissiveRadiance += uVibeHighlightColor * vibeHighlight * uVibeHighlightInt
 }
 
 function createSurfaceHighlightTargets(modelSize: THREE.Vector3) {
-  if (!joycon) return;
+  if (!joycon || !modelMount) return;
   // The specs are expressed in the source FBX's Joy-Con units. The imported
   // model is uniformly scaled for the preview, so convert them to centered
   // world coordinates first, then back into the GLTF root's local space. This
@@ -270,12 +286,16 @@ function createSurfaceHighlightTargets(modelSize: THREE.Vector3) {
   highlightScale = modelSize.y / 1.279;
   highlightFrontX = modelSize.x / 2 + 0.018;
   joycon.updateMatrixWorld(true);
-  const toRootLocal = (y: number, z: number, x?: number) =>
-    joycon!.worldToLocal(new THREE.Vector3(
+  modelMount.updateMatrixWorld(true);
+  const toRootLocal = (y: number, z: number, x?: number) => {
+    const point = new THREE.Vector3(
       x === undefined ? highlightFrontX : x * highlightScale,
       y * highlightScale,
       z * highlightScale,
-    ));
+    );
+    modelMount!.localToWorld(point);
+    return joycon!.worldToLocal(point);
+  };
   for (const spec of highlightDefinitions) {
     highlightLocalTargets.set(control(spec.name), toRootLocal(spec.y, spec.z, spec.x));
   }
@@ -384,7 +404,7 @@ function renderOnce() {
   const elapsed = performance.now() - startedAt;
   diagnosticRenderPeak = Math.max(diagnosticRenderPeak, elapsed);
   const memory = renderer.info.memory;
-  diagnostics.value = `${elapsed.toFixed(1)}ms last · ${diagnosticRenderPeak.toFixed(1)}ms peak · T${memory.textures} G${memory.geometries} P${renderer.info.programs?.length ?? 0} S${surfaceHighlightShaders.size} H${activeSurfaceHighlightCount}`;
+  diagnostics.value = `${orientationDiagnostics} · ${elapsed.toFixed(1)}ms last · ${diagnosticRenderPeak.toFixed(1)}ms peak · T${memory.textures} G${memory.geometries} P${renderer.info.programs?.length ?? 0} S${surfaceHighlightShaders.size} H${activeSurfaceHighlightCount}`;
 }
 
 function requestRender() {
@@ -410,13 +430,15 @@ function applyInspectionView() {
   if (!camera) return;
   const distance = modelDiameter * 2.35;
   if (props.inspectionView === "rail") {
-    camera.position.set(0, 0, props.side === "left" ? -distance : distance);
+    camera.position.set(props.side === "left" ? -distance : distance, 0, 0);
   } else if (props.inspectionView === "shoulder") {
-    camera.position.set(distance * 0.72, distance * 0.72, 0);
+    camera.position.set(distance * 0.55, distance * 0.45, distance * 0.72);
   } else {
-    camera.position.set(distance, 0, 0);
+    camera.position.set(0, distance, 0);
   }
-  camera.up.set(0, 1, 0);
+  // everything-imu's tracker body is Z-up. Pointing the camera's up vector at
+  // +Z lets us display its quaternion directly without a world-axis shim.
+  camera.up.set(0, 0, 1);
   camera.lookAt(0, 0, 0);
   requestRender();
 }
@@ -456,6 +478,19 @@ function applyTrackedPose() {
     joycon.position.copy(baseModelPosition);
     return;
   }
+  if (latestFusionOrientation) {
+    if (!zeroFusionOrientation) {
+      zeroFusionOrientation = latestFusionOrientation.clone();
+    }
+    const relative = relativeTrackerQuaternion(
+      [latestFusionOrientation.x, latestFusionOrientation.y, latestFusionOrientation.z, latestFusionOrientation.w],
+      [zeroFusionOrientation.x, zeroFusionOrientation.y, zeroFusionOrientation.z, zeroFusionOrientation.w],
+    );
+    joycon.quaternion.set(...relative);
+    joycon.position.copy(baseModelPosition);
+    requestRender();
+    return;
+  }
   const pose = latestPose;
   joycon.rotation.set(
     baseModelRotation.x + THREE.MathUtils.degToRad(pose.rotateX * props.sensitivity / 8),
@@ -477,12 +512,33 @@ watch(
   { immediate: true },
 );
 
+watch(
+  () => props.orientation,
+  (frame) => {
+    if (!frame) return;
+    // Match everything-imu's UI contract: tracker quaternions are XYZW and go
+    // straight into Three.js. The imported Joy-Con's different local axes are
+    // handled once by modelMount instead of rewriting live sensor rotations.
+    const { x, y, z, w } = frame.quaternion;
+    latestFusionOrientation = new THREE.Quaternion(x, y, z, w).normalize();
+    const [gyroX, gyroY, gyroZ] = frame.gyroscope;
+    orientationDiagnostics = `${frame.source} · ${frame.initializing ? "init" : "tracking"} · gyro [${gyroX.toFixed(1)}, ${gyroY.toFixed(1)}, ${gyroZ.toFixed(1)}]°/s (${frame.gyroscopeSpeed.toFixed(1)}) · bias ${frame.gyroOffsetActive ? "active" : "waiting"} · dt ${frame.samplePeriodMs.toFixed(2)}ms · accel ${frame.accelerometerIgnored ? "ignored" : `${frame.accelerationError.toFixed(1)}°`}`;
+    applyTrackedPose();
+    requestRender();
+  },
+  { immediate: true },
+);
+
 watch(() => props.sensitivity, applyTrackedPose);
 
 watch(
   () => props.followMotion,
   (enabled) => {
-    if (enabled) return;
+    if (enabled) {
+      zeroFusionOrientation = latestFusionOrientation?.clone();
+      applyTrackedPose();
+      return;
+    }
     tracker.resetUpright();
     joycon?.rotation.copy(baseModelRotation);
     if (joycon) joycon.position.copy(baseModelPosition);
@@ -494,6 +550,7 @@ watch(
   () => props.resetKey,
   () => {
     tracker.resetUpright();
+    zeroFusionOrientation = latestFusionOrientation?.clone();
     joycon?.rotation.copy(baseModelRotation);
     if (joycon) joycon.position.copy(baseModelPosition);
     requestRender();
@@ -508,7 +565,8 @@ onMounted(() => {
   scene = new THREE.Scene();
   scene.background = new THREE.Color("#101d1b");
   camera = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
-  camera.position.set(2.15, 0, 0);
+  camera.position.set(0, 2.15, 0);
+  camera.up.set(0, 0, 1);
   camera.lookAt(0, 0, 0);
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
@@ -550,7 +608,11 @@ onMounted(() => {
       joycon = new THREE.Group();
       joycon.name = `VibeCon_${props.side}_RotationPivot`;
       joycon.rotation.copy(baseModelRotation);
-      joycon.add(model);
+      modelMount = new THREE.Group();
+      modelMount.name = `VibeCon_${props.side}_ModelMount`;
+      modelMount.quaternion.copy(glbToTrackerRotation);
+      modelMount.add(model);
+      joycon.add(modelMount);
       baseModelPosition.copy(joycon.position);
 
       model.traverse((node) => {
@@ -588,6 +650,7 @@ onMounted(() => {
       createSurfaceHighlightTargets(size);
       scene?.add(joycon);
       status.value = t("debug.threeLive");
+      applyTrackedPose();
       // The first render compiles the injected shader; the second applies its
       // initial uniform values without starting a permanent animation loop.
       renderOnce();
@@ -619,8 +682,11 @@ onBeforeUnmount(() => {
   baseMaterialEmission.clear();
   highlightLocalTargets.clear();
   surfaceHighlightShaders.clear();
+  latestFusionOrientation = undefined;
+  zeroFusionOrientation = undefined;
   scene?.clear();
   joycon = undefined;
+  modelMount = undefined;
   baseModelPosition.set(0, 0, 0);
   scene = undefined;
   camera = undefined;

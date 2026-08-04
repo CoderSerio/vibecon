@@ -1,4 +1,6 @@
+use fusion_ahrs::{Ahrs, AhrsSettings, Convention, Offset, OffsetSettings};
 use hidapi::HidApi;
+use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -34,6 +36,9 @@ const JOYCON_LEFT_PRODUCT_ID: u16 = 0x2006;
 const JOYCON_RIGHT_PRODUCT_ID: u16 = 0x2007;
 const STICK_TRIGGER_THRESHOLD: f32 = 0.40;
 const MAPPING_COOLDOWN: Duration = Duration::from_millis(240);
+const JOYCON_IMU_SAMPLE_RATE_HZ: f32 = 208.0;
+const JOYCON_ACCEL_COUNTS_PER_G: f32 = 4096.0;
+const JOYCON_GYRO_COUNTS_PER_DEGREE_PER_SECOND: f32 = 16.4;
 
 #[derive(Serialize)]
 struct ControllerDevice {
@@ -53,10 +58,33 @@ struct Stick {
 
 /// One raw 0x30 IMU sample. Values are intentionally left uncalibrated until
 /// the controller-specific factory calibration path is verified.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Copy, Serialize)]
 struct ImuSample {
     acceleration: [i16; 3],
     gyroscope: [i16; 3],
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OrientationQuaternion {
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OrientationFrame {
+    quaternion: OrientationQuaternion,
+    gyroscope: [f32; 3],
+    initializing: bool,
+    accelerometer_ignored: bool,
+    acceleration_error: f32,
+    sample_period_ms: f32,
+    gyroscope_speed: f32,
+    gyro_offset_active: bool,
+    source: &'static str,
 }
 
 #[derive(Clone, Serialize)]
@@ -73,6 +101,119 @@ struct InputReport {
 struct StreamEvent {
     device_id: String,
     report: InputReport,
+    orientation: Option<OrientationFrame>,
+}
+
+struct FusionOrientationTracker {
+    ahrs: Ahrs,
+    offset: Offset,
+    last_report_at: Option<Instant>,
+}
+
+impl FusionOrientationTracker {
+    fn new() -> Self {
+        let settings = AhrsSettings {
+            convention: Convention::Nwu,
+            gain: 0.5,
+            gyroscope_range: 2000.0,
+            acceleration_rejection: 10.0,
+            magnetic_rejection: 0.0,
+            recovery_trigger_period: (JOYCON_IMU_SAMPLE_RATE_HZ * 5.0) as u32,
+        };
+        Self {
+            ahrs: Ahrs::with_settings(settings),
+            offset: Offset::new(
+                OffsetSettings {
+                    cutoff_frequency: 0.01,
+                    timeout: 5.0,
+                    // Fusion's 3°/s embedded default mistakes deliberate slow
+                    // wrist turns for stationary bias. Joy-Con interaction
+                    // needs a much narrower stillness definition.
+                    threshold: 0.35,
+                },
+                JOYCON_IMU_SAMPLE_RATE_HZ,
+            ),
+            last_report_at: None,
+        }
+    }
+
+    fn update_report(&mut self, bytes: &[u8], product_id: u16) -> Option<OrientationFrame> {
+        let samples = decode_joycon_imu_samples(bytes);
+        let sample_count = samples.iter().flatten().count();
+        if sample_count == 0 {
+            return None;
+        }
+
+        let now = Instant::now();
+        let nominal_period = 1.0 / JOYCON_IMU_SAMPLE_RATE_HZ;
+        let sample_period = self
+            .last_report_at
+            .map(|previous| previous.elapsed().as_secs_f32() / sample_count as f32)
+            .unwrap_or(nominal_period)
+            // Ignore scheduler stalls and malformed timestamps without hiding
+            // the normal Bluetooth report jitter from the estimator.
+            .clamp(nominal_period * 0.45, nominal_period * 2.5);
+        self.last_report_at = Some(now);
+
+        let mut gyroscope = Vector3::zeros();
+        for sample in samples.into_iter().flatten() {
+            let (sample_gyroscope, acceleration) = calibrated_imu_vectors(&sample, product_id);
+            let corrected_gyroscope = self.offset.update(sample_gyroscope);
+            gyroscope = corrected_gyroscope;
+            self.ahrs
+                .update_no_magnetometer(corrected_gyroscope, acceleration, sample_period);
+        }
+
+        let quaternion = self.ahrs.quaternion();
+        let quaternion = quaternion.quaternion();
+        let states = self.ahrs.internal_states();
+        let flags = self.ahrs.flags();
+        Some(OrientationFrame {
+            quaternion: OrientationQuaternion {
+                x: quaternion.i,
+                y: quaternion.j,
+                z: quaternion.k,
+                w: quaternion.w,
+            },
+            gyroscope: [gyroscope.x, gyroscope.y, gyroscope.z],
+            initializing: flags.initialising,
+            accelerometer_ignored: states.accelerometer_ignored,
+            acceleration_error: states.acceleration_error,
+            sample_period_ms: sample_period * 1000.0,
+            gyroscope_speed: gyroscope.norm(),
+            gyro_offset_active: self.offset.is_active(),
+            source: "fusion-ahrs",
+        })
+    }
+}
+
+fn calibrated_imu_vectors(sample: &ImuSample, product_id: u16) -> (Vector3<f32>, Vector3<f32>) {
+    let mut acceleration = Vector3::new(
+        f32::from(sample.acceleration[0]) / JOYCON_ACCEL_COUNTS_PER_G,
+        f32::from(sample.acceleration[1]) / JOYCON_ACCEL_COUNTS_PER_G,
+        f32::from(sample.acceleration[2]) / JOYCON_ACCEL_COUNTS_PER_G,
+    );
+    let mut gyroscope = Vector3::new(
+        f32::from(sample.gyroscope[0]) / JOYCON_GYRO_COUNTS_PER_DEGREE_PER_SECOND,
+        f32::from(sample.gyroscope[1]) / JOYCON_GYRO_COUNTS_PER_DEGREE_PER_SECOND,
+        f32::from(sample.gyroscope[2]) / JOYCON_GYRO_COUNTS_PER_DEGREE_PER_SECOND,
+    );
+
+    // The right Joy-Con's chip is mirrored around X relative to the left.
+    // First normalize that hardware difference into Nintendo's shared JSL
+    // frame, whose upright axis is +Y.
+    if product_id == JOYCON_RIGHT_PRODUCT_ID {
+        acceleration.y = -acceleration.y;
+        acceleration.z = -acceleration.z;
+        gyroscope.y = -gyroscope.y;
+        gyroscope.z = -gyroscope.z;
+    }
+
+    // Fusion's NWU convention is Z-up. Rotate the Joy-Con's Y-up body frame
+    // +90 degrees around X: out = (x, -z, y). The renderer later applies its
+    // own fixed Fusion-body -> GLB-model basis transform.
+    let to_fusion_body = |vector: Vector3<f32>| Vector3::new(vector.x, -vector.z, vector.y);
+    (to_fusion_body(gyroscope), to_fusion_body(acceleration))
 }
 
 #[derive(Clone)]
@@ -344,6 +485,7 @@ fn start_joycon_stream(
             // a much higher rate than the WebView can render.
             let mut last_emitted_at = Instant::now() - Duration::from_secs(1);
             let mut binding_states = HashMap::<String, BindingTriggerState>::new();
+            let mut orientation_tracker = FusionOrientationTracker::new();
             while stream_state
                 .active_ids
                 .lock()
@@ -355,20 +497,29 @@ fn start_joycon_stream(
                     .map_err(|_| "Joy-Con device handle is unavailable")?
                     .read_timeout(&mut buffer, 8)
                     .map_err(|error| format!("Could not read Joy-Con input: {error}"))?;
-                if count > 0 && last_emitted_at.elapsed() >= Duration::from_millis(16) {
+                if count > 0 {
                     let report = report_from_bytes(buffer[..count].to_vec(), info.product_id());
+                    // Consume every native IMU report and all three sub-samples
+                    // even though WebView presentation remains capped below.
+                    // Dropping samples before fusion causes visible lag and
+                    // permanently loses part of fast rotations.
+                    let orientation =
+                        orientation_tracker.update_report(&report.bytes, info.product_id());
                     process_mapping_report(
                         &report,
                         info.product_id(),
                         &mapping_state,
                         &mut binding_states,
                     );
-                    let event = StreamEvent {
-                        device_id: id.clone(),
-                        report,
-                    };
-                    let _ = app.emit("joycon-input", event);
-                    last_emitted_at = Instant::now();
+                    if last_emitted_at.elapsed() >= Duration::from_millis(16) {
+                        let event = StreamEvent {
+                            device_id: id.clone(),
+                            report,
+                            orientation,
+                        };
+                        let _ = app.emit("joycon-input", event);
+                        last_emitted_at = Instant::now();
+                    }
                 }
             }
             Ok(())
@@ -1053,8 +1204,28 @@ fn save_annotation(draft: AnnotationDraft) -> Result<Annotation, String> {
     Ok(annotation)
 }
 
-/// Native Joy-Con 0x30 reports carry packed 12-bit axes. macOS's generic HID
-/// driver currently exposes paired Joy-Con (L) through a compact 0x3f report.
+fn decode_joycon_imu_samples(bytes: &[u8]) -> [Option<ImuSample>; 3] {
+    let mut samples = [None, None, None];
+    if bytes.first() != Some(&0x30) {
+        return samples;
+    }
+    let signed = |offset: usize| i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+    // Each native report contains up to three chronological IMU samples. A
+    // partial HID packet still yields every complete sample it contains.
+    for (index, offset) in [13_usize, 25, 37].into_iter().enumerate() {
+        if bytes.len() < offset + 12 {
+            continue;
+        }
+        samples[index] = Some(ImuSample {
+            acceleration: [signed(offset), signed(offset + 2), signed(offset + 4)],
+            gyroscope: [signed(offset + 6), signed(offset + 8), signed(offset + 10)],
+        });
+    }
+    samples
+}
+
+/// Native Joy-Con 0x30 reports carry packed 12-bit stick axes and three IMU
+/// samples. macOS's generic HID driver can also expose a compact 0x3f report.
 fn decode_joycon_report(
     bytes: &[u8],
     product_id: u16,
@@ -1132,18 +1303,12 @@ fn decode_joycon_report(
     // coordinates where Y grows downward. X already matches the portrait UI.
     let mut left_stick = decode_stick(6);
     left_stick.normalized_y = -left_stick.normalized_y;
-    let imu = if bytes.len() >= 25 {
-        let signed = |offset: usize| i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
-        Some(ImuSample {
-            // Standard 0x30 layout begins IMU sample 0 at byte 13: accel XYZ
-            // followed by gyro XYZ. Later samples are intentionally not
-            // averaged here, so capture logs retain the exact packet bytes.
-            acceleration: [signed(13), signed(15), signed(17)],
-            gyroscope: [signed(19), signed(21), signed(23)],
-        })
-    } else {
-        None
-    };
+    // The report preview keeps the first raw sample for backward-compatible
+    // logs. Fusion consumes all complete samples via decode_joycon_imu_samples.
+    let imu = decode_joycon_imu_samples(bytes)
+        .into_iter()
+        .flatten()
+        .next();
     (
         Some(left_stick),
         Some(decode_stick(9)),
@@ -1276,5 +1441,40 @@ mod tests {
         let imu = imu.expect("native packet has IMU data");
         assert_eq!(imu.acceleration, [100, -200, 300]);
         assert_eq!(imu.gyroscope, [-400, 500, -600]);
+    }
+
+    #[test]
+    fn native_report_decodes_all_three_imu_samples_in_order() {
+        let mut report = vec![0_u8; 49];
+        report[0] = 0x30;
+        for (index, offset) in [13_usize, 25, 37].into_iter().enumerate() {
+            let base = (index as i16 + 1) * 100;
+            for (axis, value) in [base, base + 1, base + 2, base + 3, base + 4, base + 5]
+                .into_iter()
+                .enumerate()
+            {
+                let start = offset + axis * 2;
+                report[start..start + 2].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        let samples = decode_joycon_imu_samples(&report);
+        assert_eq!(samples.iter().flatten().count(), 3);
+        assert_eq!(samples[0].unwrap().acceleration, [100, 101, 102]);
+        assert_eq!(samples[1].unwrap().gyroscope, [203, 204, 205]);
+        assert_eq!(samples[2].unwrap().acceleration, [300, 301, 302]);
+    }
+
+    #[test]
+    fn right_joycon_imu_is_remapped_into_shared_body_axes() {
+        let sample = ImuSample {
+            acceleration: [4096, 2048, -1024],
+            gyroscope: [164, 328, -82],
+        };
+        let (left_gyro, left_accel) = calibrated_imu_vectors(&sample, JOYCON_LEFT_PRODUCT_ID);
+        let (right_gyro, right_accel) = calibrated_imu_vectors(&sample, JOYCON_RIGHT_PRODUCT_ID);
+        assert_eq!(left_gyro, Vector3::new(10.0, 5.0, 20.0));
+        assert_eq!(left_accel, Vector3::new(1.0, 0.25, 0.5));
+        assert_eq!(right_gyro, Vector3::new(10.0, -5.0, -20.0));
+        assert_eq!(right_accel, Vector3::new(1.0, -0.25, -0.5));
     }
 }

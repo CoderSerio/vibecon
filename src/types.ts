@@ -17,6 +17,25 @@ export type ImuSample = {
   gyroscope: [number, number, number];
 };
 
+export type OrientationQuaternion = {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+};
+
+export type OrientationFrame = {
+  quaternion: OrientationQuaternion;
+  gyroscope: [number, number, number];
+  initializing: boolean;
+  accelerometerIgnored: boolean;
+  accelerationError: number;
+  samplePeriodMs: number;
+  gyroscopeSpeed: number;
+  gyroOffsetActive: boolean;
+  source: string;
+};
+
 export type InputReport = {
   report_id: number;
   bytes: number[];

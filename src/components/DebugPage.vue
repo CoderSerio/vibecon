@@ -2,7 +2,15 @@
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import ThreeJoyCon from "./ThreeJoyCon.vue";
-import type { Controller, ImuSample, InputReport, Label, LogEntry, Stick } from "../types";
+import type {
+  Controller,
+  ImuSample,
+  InputReport,
+  Label,
+  LogEntry,
+  OrientationFrame,
+  Stick,
+} from "../types";
 
 type LogGroup = { timestamp: Date; entries: LogEntry[] };
 const props = defineProps<{
@@ -15,6 +23,8 @@ const props = defineProps<{
   rightStick: Stick | null;
   leftImu: ImuSample | null;
   rightImu: ImuSample | null;
+  leftOrientation: OrientationFrame | null;
+  rightOrientation: OrientationFrame | null;
   buttonsReadout: string;
   sampleRate: string;
   groupedLogs: LogGroup[];
@@ -49,6 +59,9 @@ watch(motionSensitivity, (value) => {
 const maxVisibleLogEntries = 32;
 const totalLogEntries = computed(() =>
   props.groupedLogs.reduce((total, group) => total + group.entries.length, 0),
+);
+const hasFusionOrientation = computed(() =>
+  Boolean(props.leftOrientation || props.rightOrientation),
 );
 const visibleLogGroups = computed(() => {
   let remaining = maxVisibleLogEntries;
@@ -112,7 +125,7 @@ function resetThreePose() {
             <span class="switch-track" aria-hidden="true"></span>
             <span>{{ t("debug.threeFollowMotion") }}</span>
           </label>
-          <label class="motion-sensitivity compact">
+          <label v-if="!hasFusionOrientation" class="motion-sensitivity compact">
             <span>{{ t("debug.threeSensitivity") }}</span>
             <input v-model.number="motionSensitivity" type="range" min="1" max="30" step="1" />
             <output>{{ motionSensitivity }}×</output>
@@ -122,14 +135,14 @@ function resetThreePose() {
       </div>
     </div>
     <div class="three-joycon-stage">
-      <ThreeJoyCon side="left" :imu="leftImu" :stick="leftStick" :active-controls="activeControls" :follow-motion="threeFollowMotion" :sensitivity="motionSensitivity" :reset-key="threeResetKey" :inspection-view="inspectionView" />
+      <ThreeJoyCon side="left" :imu="leftImu" :orientation="leftOrientation" :stick="leftStick" :active-controls="activeControls" :follow-motion="threeFollowMotion" :sensitivity="motionSensitivity" :reset-key="threeResetKey" :inspection-view="inspectionView" />
       <div class="axis-readout three-axis-readout">
         <span class="readout-label">{{ t("debug.primaryStick") }}</span><output class="axis-output">{{ renderStick(leftStick) }}</output>
         <span class="readout-label">{{ t("debug.secondaryAxes") }}</span><output class="axis-output">{{ renderStick(rightStick) }}</output>
         <span class="readout-label">{{ t("debug.leftImu") }}</span><output class="axis-output imu-output">{{ renderImu(leftImu) }}</output>
         <span class="readout-label">{{ t("debug.rightImu") }}</span><output class="axis-output imu-output">{{ renderImu(rightImu) }}</output>
       </div>
-      <ThreeJoyCon side="right" :imu="rightImu" :stick="rightStick" :active-controls="activeControls" :follow-motion="threeFollowMotion" :sensitivity="motionSensitivity" :reset-key="threeResetKey" :inspection-view="inspectionView" />
+      <ThreeJoyCon side="right" :imu="rightImu" :orientation="rightOrientation" :stick="rightStick" :active-controls="activeControls" :follow-motion="threeFollowMotion" :sensitivity="motionSensitivity" :reset-key="threeResetKey" :inspection-view="inspectionView" />
     </div>
   </section>
 
