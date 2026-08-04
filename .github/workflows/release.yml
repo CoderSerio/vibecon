@@ -30,13 +30,14 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "VibeCon ${{ github.ref_name }}"
           releaseBody: |
-            VibeCon 0.0.5 adds real-time fused Joy-Con orientation tracking to the interactive 3D debugger.
+            VibeCon 0.0.6 adds real-time fused Joy-Con orientation tracking to the interactive 3D debugger.
 
             Highlights:
             - Fusion AHRS consumes every native Joy-Con IMU sub-sample instead of dropping motion between UI frames.
             - Left and right Joy-Cons share one verified portrait coordinate system.
             - Recentered 3D rotation follows the physical controller without translating the model.
             - Live gyro, bias, timing, and accelerometer diagnostics help inspect tracking quality.
+            - Release builds include a license-safe procedural Joy-Con; detailed third-party reference GLBs remain local-only.
             - Existing opt-in Codex/window mappings and manual vibration testing remain available.
 
             This is an experimental, ad-hoc-signed Apple Silicon macOS preview. See the README for Accessibility and Gatekeeper setup.

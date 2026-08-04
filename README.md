@@ -57,6 +57,7 @@ Before it automates anything, VibeCon makes the controller observable: raw HID r
 - Decode native `0x30` and macOS compact `0x3F` Joy-Con reports, including button bitfields and the observed eight-way HAT profile.
 - Decode all three chronological IMU sub-samples in each native `0x30` report and feed them into Fusion AHRS without dropping samples between UI frames.
 - Visualize both Joy-Cons as interactive 3D models: sticks tilt, pressed controls highlight, and optional motion following rotates each model around a fixed point. Recenter establishes the current portrait pose as the visual baseline.
+- Packaged builds use a distributable Joy-Con assembled from Three.js primitives. Detailed third-party reference GLBs remain local-only and are never included as stand-alone release files.
 - Inspect fused orientation diagnostics including remapped gyro axes, angular speed, sample period, accelerometer rejection, and runtime bias estimation.
 - Choose a log policy: key operations, legacy 75 ms snapshots, 60/30/10 Hz samples, or every report; clear the visible log whenever needed.
 - Label captured reports as stick positions or button press/release samples. Labels are stored locally in `~/.vibecon/annotations.jsonl` and shown again for matching reports.
@@ -112,7 +113,7 @@ docs/images/                        Logo and README screenshots
 ```
 
 For the current release candidate's real-device checks, see
-[the 0.0.5 manual QA list](./docs/qa-0.0.5.md).
+[the 0.0.6 manual QA list](./docs/qa-0.0.6.md).
 
 ## Windows
 
