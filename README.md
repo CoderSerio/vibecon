@@ -55,8 +55,9 @@ Before it automates anything, VibeCon makes the controller observable: raw HID r
 - Detect paired **Joy-Con (L)** and **Joy-Con (R)** devices through the native Tauri/Rust HID backend.
 - Inspect one or both controllers at once; grouped logs keep a single timestamp with aligned L/R report rows.
 - Decode native `0x30` and macOS compact `0x3F` Joy-Con reports, including button bitfields and the observed eight-way HAT profile.
-- Surface the first raw accelerometer / gyroscope sample from native `0x30` reports. These values are intentionally uncalibrated observation data, not motion gestures yet.
-- Visualize both Joy-Cons in CSS: sticks move live; held controls glow and taps briefly persist as afterglow.
+- Decode all three chronological IMU sub-samples in each native `0x30` report and feed them into Fusion AHRS without dropping samples between UI frames.
+- Visualize both Joy-Cons as interactive 3D models: sticks tilt, pressed controls highlight, and optional motion following rotates each model around a fixed point. Recenter establishes the current portrait pose as the visual baseline.
+- Inspect fused orientation diagnostics including remapped gyro axes, angular speed, sample period, accelerometer rejection, and runtime bias estimation.
 - Choose a log policy: key operations, legacy 75 ms snapshots, 60/30/10 Hz samples, or every report; clear the visible log whenever needed.
 - Label captured reports as stick positions or button press/release samples. Labels are stored locally in `~/.vibecon/annotations.jsonl` and shown again for matching reports.
 - **Verified macOS mappings:** **Codex Cowork** uses the Joy-Con (L) stick left/right to switch windows and Joy-Con (L) D-pad Up / Joy-Con (R) X to focus Codex. **Inspect Only** deliberately sends no actions. Every binding is opt-in, stored in `~/.vibecon/mappings.json`, and inactive on the Debug page. New actions are added only after real-device verification.
@@ -103,14 +104,15 @@ cd src-tauri && cargo check   # Rust/Tauri/HID backend
 ```
 
 ```text
-src/App.vue             Vue debug and mapping UI
-src/components/JoyCon.vue  Live CSS controller visualizer
-src-tauri/src/lib.rs    HID stream, Joy-Con decoding, native commands
-docs/images/            Logo and README screenshots
+src/App.vue                         Vue debug and mapping UI
+src/components/ThreeJoyCon.vue      Interactive 3D Joy-Con debugger
+src/motion/tracker-coordinate.ts    Tracker and GLB coordinate contract
+src-tauri/src/lib.rs                HID, Fusion orientation, native commands
+docs/images/                        Logo and README screenshots
 ```
 
 For the current release candidate's real-device checks, see
-[the 0.0.4 manual QA list](./docs/qa-0.0.4.md).
+[the 0.0.5 manual QA list](./docs/qa-0.0.5.md).
 
 ## Windows
 
@@ -120,7 +122,7 @@ The desktop UI and controller logic are not tied to Swift or macOS APIs. However
 
 - Profiles and calibration for Joy-Con, DualSense, Xbox, and 8BitDo.
 - More deliberate mappings, with clear per-platform permissions.
-- Spatial / motion input exploration.
+- Motion calibration and deliberate gesture mappings built on the verified orientation pipeline.
 - Exportable, shareable controller profiles.
 
 ## Privacy

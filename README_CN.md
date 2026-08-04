@@ -55,8 +55,9 @@ VibeCon 从一个很朴素的想法开始：与其买一个昂贵又封闭的「
 - 通过 Tauri/Rust 原生 HID 后端发现已配对的 **Joy-Con (L)** 和 **Joy-Con (R)**。
 - 可同时选中左右两只手柄；日志按一个时间戳分组，并对齐显示 L/R 两行报文。
 - 解码 Joy-Con 原生 `0x30` 与 macOS 紧凑 `0x3F` report，包括按钮 bitfield 和已观测到的八方向 HAT。
-- 显示原生 `0x30` report 的第一条原始加速度计 / 陀螺仪样本。这些值刻意保持未校准的观测数据，暂时不作为动作手势使用。
-- 原创 CSS Joy-Con 可视化：摇杆实时同步、按住高亮、短按有残影提示。
+- 解码每条原生 `0x30` report 中按时间排列的三组 IMU 子采样，并全部送入 Fusion AHRS；UI 降频不会再丢失中间的运动数据。
+- 使用可交互的 3D 模型展示左右 Joy-Con：摇杆会倾斜、按键会高亮；开启运动跟随后，模型只绕固定点旋转。点击复位会把当前竖握姿态设为视觉基准。
+- 展示融合姿态诊断信息，包括统一坐标后的陀螺仪三轴、角速度、采样周期、加速度计拒绝状态和运行时零偏估计。
 - 日志策略可选：关键操作、旧版 75ms 快照、60/30/10 Hz 采样或每一条 report；也可以随时清空当前可见日志。
 - 对抓到的 report 打标：摇杆点位或按键按下/抬起。数据只保存在 `~/.vibecon/annotations.jsonl`，再次命中时会回显标签。
 - **已验证的 macOS 映射：** **Codex Cowork** 用 Joy-Con (L) 摇杆向左/向右切换窗口，用 Joy-Con (L) 的方向上或 Joy-Con (R) 的 X 聚焦 Codex。**Inspect Only** 则刻意不发送任何操作。每个绑定都需要显式开启，保存在 `~/.vibecon/mappings.json`，并在 Debug 页面临时失效，避免干扰抓包。新动作只会在真机验证后逐项加入。
@@ -103,14 +104,15 @@ cd src-tauri && cargo check   # Rust/Tauri/HID 后端
 ```
 
 ```text
-src/App.vue                   Vue 调试与映射界面
-src/components/JoyCon.vue     实时 CSS 手柄可视化
-src-tauri/src/lib.rs          HID 流、Joy-Con 解码和原生命令
-docs/images/                  Logo 与 README 截图
+src/App.vue                         Vue 调试与映射界面
+src/components/ThreeJoyCon.vue      可交互的 3D Joy-Con 调试器
+src/motion/tracker-coordinate.ts    Tracker 与 GLB 坐标契约
+src-tauri/src/lib.rs                HID、Fusion 姿态与原生命令
+docs/images/                        Logo 与 README 截图
 ```
 
 当前 release candidate 的真机检查步骤见
-[0.0.4 手动 QA 清单](./docs/qa-0.0.4.md)。
+[0.0.5 手动 QA 清单](./docs/qa-0.0.5.md)。
 
 ## Windows
 
@@ -120,7 +122,7 @@ docs/images/                  Logo 与 README 截图
 
 - Joy-Con、DualSense、Xbox、8BitDo 的 profile 与校准；
 - 更多明确、可审阅、按平台申请权限的映射；
-- 空间 / 动作输入探索；
+- 基于已验证姿态链路的运动校准与明确手势映射；
 - 可导出、可共享的控制器 profile。
 
 ## 隐私
