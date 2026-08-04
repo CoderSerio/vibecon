@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { ImuSample, OrientationFrame, Stick } from "../types";
 import { MotionPoseTracker } from "../motion/pose";
+import { createProceduralJoyCon } from "../motion/procedural-joycon";
 import {
   JOYCON_GLB_AXES_IN_TRACKER,
   relativeTrackerQuaternion,
@@ -443,6 +444,65 @@ function applyInspectionView() {
   requestRender();
 }
 
+function mountModel(model: THREE.Object3D, modelStatus: string) {
+  if (disposed) {
+    disposeObjectTree(model);
+    return;
+  }
+  model.scale.setScalar(2.9);
+  model.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(model);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+
+  // Rotate a centered parent instead of the translated model itself.
+  // Otherwise an off-center export origin makes it orbit around the canvas.
+  model.position.sub(center);
+  joycon = new THREE.Group();
+  joycon.name = `VibeCon_${props.side}_RotationPivot`;
+  joycon.rotation.copy(baseModelRotation);
+  modelMount = new THREE.Group();
+  modelMount.name = `VibeCon_${props.side}_ModelMount`;
+  modelMount.quaternion.copy(glbToTrackerRotation);
+  modelMount.add(model);
+  joycon.add(modelMount);
+  baseModelPosition.copy(joycon.position);
+
+  model.traverse((node) => {
+    nodes.set(node.name, node);
+    basePositions.set(node.name, node.position.clone());
+    baseRotations.set(node.name, node.rotation.clone());
+    if (!(node instanceof THREE.Mesh)) return;
+    node.material = Array.isArray(node.material)
+      ? node.material.map((material) => material.clone())
+      : node.material.clone();
+    const materials = Array.isArray(node.material) ? node.material : [node.material];
+    for (const material of materials) {
+      if (material instanceof THREE.MeshStandardMaterial) {
+        baseMaterialEmission.set(material, {
+          baseColor: material.color.clone(),
+          emissive: material.emissive.clone(),
+          intensity: material.emissiveIntensity,
+        });
+        const registered = materialsByName.get(material.name) ?? [];
+        registered.push(material);
+        materialsByName.set(material.name, registered);
+      }
+      enableSurfaceHighlight(material);
+    }
+    node.castShadow = true;
+    node.receiveShadow = true;
+  });
+  modelDiameter = Math.max(size.x, size.y, size.z);
+  applyInspectionView();
+  createSurfaceHighlightTargets(size);
+  scene?.add(joycon);
+  status.value = modelStatus;
+  applyTrackedPose();
+  renderOnce();
+  requestRender();
+}
+
 function disposeObjectTree(root: THREE.Object3D) {
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
@@ -589,76 +649,10 @@ onMounted(() => {
 
   new GLTFLoader().load(
     modelUrl,
-    (gltf) => {
-      if (disposed) {
-        disposeObjectTree(gltf.scene);
-        return;
-      }
-      const model = gltf.scene;
-      model.scale.setScalar(2.9);
-      model.updateMatrixWorld(true);
-      const bounds = new THREE.Box3().setFromObject(model);
-      const center = bounds.getCenter(new THREE.Vector3());
-      const size = bounds.getSize(new THREE.Vector3());
-
-      // Rotate a centered parent instead of the translated GLTF scene itself.
-      // Otherwise the model's off-center export origin makes it orbit around
-      // the canvas when motion tracking changes its rotation.
-      model.position.sub(center);
-      joycon = new THREE.Group();
-      joycon.name = `VibeCon_${props.side}_RotationPivot`;
-      joycon.rotation.copy(baseModelRotation);
-      modelMount = new THREE.Group();
-      modelMount.name = `VibeCon_${props.side}_ModelMount`;
-      modelMount.quaternion.copy(glbToTrackerRotation);
-      modelMount.add(model);
-      joycon.add(modelMount);
-      baseModelPosition.copy(joycon.position);
-
-      model.traverse((node) => {
-        nodes.set(node.name, node);
-        basePositions.set(node.name, node.position.clone());
-        baseRotations.set(node.name, node.rotation.clone());
-        if (node instanceof THREE.Mesh) {
-          // Keep the material's original shape. Assigning `[material]` to a
-          // single-material mesh without geometry groups makes Three skip the
-          // draw call entirely, which looks like a successfully loaded but
-          // empty canvas.
-          node.material = Array.isArray(node.material)
-            ? node.material.map((material) => material.clone())
-            : node.material.clone();
-          const materials = Array.isArray(node.material) ? node.material : [node.material];
-          for (const material of materials) {
-            if (material instanceof THREE.MeshStandardMaterial) {
-              baseMaterialEmission.set(material, {
-                baseColor: material.color.clone(),
-                emissive: material.emissive.clone(),
-                intensity: material.emissiveIntensity,
-              });
-              const registered = materialsByName.get(material.name) ?? [];
-              registered.push(material);
-              materialsByName.set(material.name, registered);
-            }
-            enableSurfaceHighlight(material);
-          }
-          node.castShadow = true;
-          node.receiveShadow = true;
-        }
-      });
-      modelDiameter = Math.max(size.x, size.y, size.z);
-      applyInspectionView();
-      createSurfaceHighlightTargets(size);
-      scene?.add(joycon);
-      status.value = t("debug.threeLive");
-      applyTrackedPose();
-      // The first render compiles the injected shader; the second applies its
-      // initial uniform values without starting a permanent animation loop.
-      renderOnce();
-      requestRender();
-    },
+    (gltf) => mountModel(gltf.scene, t("debug.threeLive")),
     undefined,
     () => {
-      status.value = t("debug.threeUnavailable");
+      mountModel(createProceduralJoyCon(props.side), t("debug.threeFallback"));
     },
   );
 
