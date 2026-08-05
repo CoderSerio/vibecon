@@ -33,7 +33,7 @@
    xattr -dr com.apple.quarantine "/Applications/VibeCon.app"
    ```
 
-4. 从「应用程序」打开 `VibeCon`。只有启用实验性的窗口切换映射时，才需要再授予辅助功能权限。
+4. 从「应用程序」打开 `VibeCon`。启用窗口切换或实验性的鼠标控制时，需要再授予辅助功能权限。
 
 这条命令只应对从本仓库下载的 Release 使用。Developer ID 签名与 Apple Notarization 会在之后的公开版本中补上。
 
@@ -62,6 +62,7 @@ VibeCon 从一个很朴素的想法开始：与其买一个昂贵又封闭的「
 - 日志策略可选：关键操作、旧版 75ms 快照、60/30/10 Hz 采样或每一条 report；也可以随时清空当前可见日志。
 - 对抓到的 report 打标：摇杆点位或按键按下/抬起。数据只保存在 `~/.vibecon/annotations.jsonl`，再次命中时会回显标签。
 - **已验证的 macOS 映射：** **Codex Cowork** 用 Joy-Con (L) 摇杆向左/向右切换窗口，用 Joy-Con (L) 的方向上或 Joy-Con (R) 的 X 聚焦 Codex。**Inspect Only** 则刻意不发送任何操作。每个绑定都需要显式开启，保存在 `~/.vibecon/mappings.json`，并在 Debug 页面临时失效，避免干扰抓包。新动作只会在真机验证后逐项加入。
+- **实验性鼠标控制：** 摇杆模式用摇杆移动光标；体感模式使用 Joy-Con 旋转。L/R 负责左键与拖拽，ZL/ZR 负责右键或体感复位，长按 −/+ 切换模式。独立测试会回读实际光标坐标，不会只凭事件发送调用成功就宣称鼠标可用。
 - **实验性 Joy-Con 输出：** Mappings 页面提供一个手动、短促的 **测试已选 Joy-Con 震动** 脉冲。它不会被绑定或任务事件自动触发；任何 HID 写入失败都会显示出来且不会重试。
 
 ### 已观测到的 Joy-Con 规律
@@ -87,15 +88,16 @@ pnpm tauri dev
 ## 配置 macOS 映射
 
 1. 在 **Debug** 页面选中要使用的手柄。需要两个 Codex 聚焦按键时，左右两侧都选中。
-2. 打开 **Mappings**，选择 **Codex Cowork**，然后按需开启总开关与已验证的单项绑定。**Inspect Only** 则刻意不向 macOS 发送操作。该页面会暂停 Debug 的可视化与日志，但 HID reader 仍会保持运行。
-3. 窗口切换需要给 VibeCon 授予 **辅助功能** 权限；如果缺失，Mappings 页面可以直接打开对应的系统设置页面。
+2. 打开 **Mappings**，选择 **Codex Cowork**，然后按需开启总开关与已验证的单项绑定。**Inspect Only** 则刻意不发送快捷操作。上方共享的手柄预览保持实时，只会把最下方的原始日志替换成映射面板。
+3. 窗口切换、鼠标移动与点击都需要给 VibeCon 授予 **辅助功能** 权限。映射面板会显示当前运行构建的精确路径、主动请求权限，并提供独立的鼠标移动测试。
 
 窗口切换直接通过 macOS Quartz 发送快捷键，因此只需要 **辅助功能** 权限；聚焦 Codex 使用系统应用启动器，不需要辅助功能权限。
+
+鼠标 MVP 支持摇杆模式与体感模式，具体实现与真机验证步骤见[工程记录](./docs/pointer-control-mvp.zh-CN.md)。
 
 ### 用 Agent 编辑预设
 
 映射是位于 `~/.vibecon/mappings.json` 的可读 JSON。点击 **Copy Agent Prompt** 可以复制 schema 与安全边界给编码 Agent。VibeCon 只接受已知 Joy-Con 控件，以及已验证的 `window_previous`、`window_next`、`focus_codex` 三个动作；它不会从映射文件执行任意 shell 命令。点击 **Reset defaults** 可恢复已验证的内置配置。
-
 
 ## 开发
 
@@ -103,6 +105,8 @@ pnpm tauri dev
 pnpm build                    # TypeScript + Vite
 cd src-tauri && cargo check   # Rust/Tauri/HID 后端
 ```
+
+在 macOS 上，`pnpm tauri dev` 会生成 `VibeCon Dev.app`。如果钥匙串中存在 Apple Development identity，本地 runner 会签名整个 bundle，使开发应用拥有稳定的 code requirement；Rust 热更新后辅助功能权限不应再因 `cdhash` 变化而失效。
 
 ```text
 src/App.vue                         Vue 调试与映射界面

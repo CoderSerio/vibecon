@@ -58,10 +58,7 @@ export type Label = {
   phase?: "pressed" | "released" | "moved" | "reset";
 };
 
-export type MappingAction =
-  | "window_previous"
-  | "window_next"
-  | "focus_codex";
+export type MappingAction = "window_previous" | "window_next" | "focus_codex";
 
 export type MappingBinding = {
   id: string;
@@ -81,4 +78,39 @@ export type MappingConfig = {
   version: number;
   activePresetId: string;
   presets: MappingPreset[];
+  pointer: PointerConfig;
+};
+
+export type PointerMode = "stick" | "motion";
+
+export type PointerConfig = {
+  enabled: boolean;
+  mode: PointerMode;
+  modeSwitchHoldMs: number;
+  stick: {
+    deadzone: number;
+    maxSpeed: number;
+    acceleration: number;
+  };
+  motion: {
+    sensitivity: number;
+    verticalRatio: number;
+    noiseThreshold: number;
+  };
+};
+
+export type PointerRuntimeStatus = {
+  active: boolean;
+  enabled: boolean;
+  mode: PointerMode;
+  accessibilityGranted: boolean;
+  backend: string;
+  executablePath: string;
+};
+
+export type PointerMoveTestResult = {
+  requestedX: number;
+  requestedY: number;
+  actualX: number;
+  actualY: number;
 };

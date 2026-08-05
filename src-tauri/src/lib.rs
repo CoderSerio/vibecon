@@ -24,18 +24,17 @@ use core_graphics::{
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
-#[cfg(target_os = "macos")]
-#[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
-    fn AXIsProcessTrusted() -> bool;
-}
 use tauri::Emitter;
+
+mod platform_pointer;
+use platform_pointer::PointerButton;
 
 const NINTENDO_VENDOR_ID: u16 = 0x057e;
 const JOYCON_LEFT_PRODUCT_ID: u16 = 0x2006;
 const JOYCON_RIGHT_PRODUCT_ID: u16 = 0x2007;
 const STICK_TRIGGER_THRESHOLD: f32 = 0.40;
 const MAPPING_COOLDOWN: Duration = Duration::from_millis(240);
+const POINTER_MODE_SWITCH_GUARD: Duration = Duration::from_millis(150);
 const JOYCON_IMU_SAMPLE_RATE_HZ: f32 = 208.0;
 const JOYCON_ACCEL_COUNTS_PER_G: f32 = 4096.0;
 const JOYCON_GYRO_COUNTS_PER_DEGREE_PER_SECOND: f32 = 16.4;
@@ -46,6 +45,26 @@ struct ControllerDevice {
     name: String,
     product_id: u16,
     transport: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PointerRuntimeStatus {
+    active: bool,
+    enabled: bool,
+    mode: &'static str,
+    accessibility_granted: bool,
+    backend: &'static str,
+    executable_path: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PointerMoveTestResult {
+    requested_x: f64,
+    requested_y: f64,
+    actual_x: f64,
+    actual_y: f64,
 }
 
 #[derive(Clone, Serialize)]
@@ -237,6 +256,8 @@ impl Default for StreamState {
 struct MappingRuntimeState {
     active: Arc<AtomicBool>,
     config: Arc<Mutex<MappingConfig>>,
+    pointer_mode: Arc<AtomicU8>,
+    pointer_mode_changed_at: Arc<Mutex<Instant>>,
 }
 
 impl Default for MappingRuntimeState {
@@ -244,6 +265,10 @@ impl Default for MappingRuntimeState {
         Self {
             active: Arc::new(AtomicBool::new(false)),
             config: Arc::new(Mutex::new(MappingConfig::default())),
+            pointer_mode: Arc::new(AtomicU8::new(PointerMode::Stick as u8)),
+            pointer_mode_changed_at: Arc::new(Mutex::new(
+                Instant::now() - POINTER_MODE_SWITCH_GUARD,
+            )),
         }
     }
 }
@@ -289,7 +314,7 @@ struct Annotation {
     label: AnnotationLabel,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct MappingSettings {
     window_switch_enabled: bool,
     #[serde(default)]
@@ -314,12 +339,96 @@ struct MappingPreset {
     bindings: Vec<MappingBinding>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PointerMode {
+    Stick = 0,
+    Motion = 1,
+}
+
+impl PointerMode {
+    fn from_u8(value: u8) -> Self {
+        if value == Self::Motion as u8 {
+            Self::Motion
+        } else {
+            Self::Stick
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stick => "stick",
+            Self::Motion => "motion",
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StickPointerConfig {
+    deadzone: f32,
+    max_speed: f32,
+    acceleration: f32,
+}
+
+impl Default for StickPointerConfig {
+    fn default() -> Self {
+        Self {
+            deadzone: 0.12,
+            max_speed: 1400.0,
+            acceleration: 1.6,
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MotionPointerConfig {
+    sensitivity: f32,
+    vertical_ratio: f32,
+    noise_threshold: f32,
+}
+
+impl Default for MotionPointerConfig {
+    fn default() -> Self {
+        Self {
+            sensitivity: 8.0,
+            vertical_ratio: 0.85,
+            noise_threshold: 0.015,
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PointerConfig {
+    enabled: bool,
+    mode: PointerMode,
+    mode_switch_hold_ms: u64,
+    stick: StickPointerConfig,
+    motion: MotionPointerConfig,
+}
+
+impl Default for PointerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: PointerMode::Stick,
+            mode_switch_hold_ms: 600,
+            stick: StickPointerConfig::default(),
+            motion: MotionPointerConfig::default(),
+        }
+    }
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MappingConfig {
     version: u8,
     active_preset_id: String,
     presets: Vec<MappingPreset>,
+    #[serde(default)]
+    pointer: PointerConfig,
 }
 
 impl MappingConfig {
@@ -358,6 +467,7 @@ impl Default for MappingConfig {
                     bindings: vec![],
                 },
             ],
+            pointer: PointerConfig::default(),
         }
     }
 }
@@ -385,13 +495,56 @@ impl Default for BindingTriggerState {
     }
 }
 
-impl Default for MappingSettings {
+struct PointerDeviceState {
+    last_mode: PointerMode,
+    last_report_at: Option<Instant>,
+    previous_orientation: Option<[f32; 4]>,
+    mode_switch_started_at: Option<Instant>,
+    mode_switch_fired: bool,
+    left_button_down: bool,
+    right_button_down: bool,
+    subpixel_x: f32,
+    subpixel_y: f32,
+    permission_error_reported: bool,
+}
+
+impl Default for PointerDeviceState {
     fn default() -> Self {
         Self {
-            window_switch_enabled: false,
-            focus_codex_enabled: false,
+            last_mode: PointerMode::Stick,
+            last_report_at: None,
+            previous_orientation: None,
+            mode_switch_started_at: None,
+            mode_switch_fired: false,
+            left_button_down: false,
+            right_button_down: false,
+            subpixel_x: 0.0,
+            subpixel_y: 0.0,
+            permission_error_reported: false,
         }
     }
+}
+
+impl PointerDeviceState {
+    fn reset_motion(&mut self, orientation: Option<&OrientationFrame>) {
+        self.previous_orientation = orientation.map(orientation_components);
+        self.subpixel_x = 0.0;
+        self.subpixel_y = 0.0;
+    }
+
+    fn reset_all(&mut self, orientation: Option<&OrientationFrame>) {
+        self.last_report_at = None;
+        self.reset_motion(orientation);
+    }
+}
+
+fn orientation_components(frame: &OrientationFrame) -> [f32; 4] {
+    [
+        frame.quaternion.x,
+        frame.quaternion.y,
+        frame.quaternion.z,
+        frame.quaternion.w,
+    ]
 }
 
 fn display_name(product_id: u16) -> &'static str {
@@ -485,6 +638,7 @@ fn start_joycon_stream(
             // a much higher rate than the WebView can render.
             let mut last_emitted_at = Instant::now() - Duration::from_secs(1);
             let mut binding_states = HashMap::<String, BindingTriggerState>::new();
+            let mut pointer_state = PointerDeviceState::default();
             let mut orientation_tracker = FusionOrientationTracker::new();
             while stream_state
                 .active_ids
@@ -511,6 +665,14 @@ fn start_joycon_stream(
                         &mapping_state,
                         &mut binding_states,
                     );
+                    process_pointer_report(
+                        &app,
+                        &report,
+                        orientation.as_ref(),
+                        info.product_id(),
+                        &mapping_state,
+                        &mut pointer_state,
+                    );
                     if last_emitted_at.elapsed() >= Duration::from_millis(16) {
                         let event = StreamEvent {
                             device_id: id.clone(),
@@ -522,6 +684,7 @@ fn start_joycon_stream(
                     }
                 }
             }
+            release_pointer_buttons(&mut pointer_state);
             Ok(())
         })();
         if let Err(message) = result {
@@ -558,6 +721,14 @@ fn process_mapping_report(
         return;
     }
     for binding in preset.bindings.iter().filter(|binding| binding.enabled) {
+        if config.pointer.enabled
+            && matches!(
+                binding.control.as_str(),
+                "joycon_left.stick_left" | "joycon_left.stick_right"
+            )
+        {
+            continue;
+        }
         let pressed = control_is_pressed(&binding.control, report, product_id);
         let state = binding_states.entry(binding.id.clone()).or_default();
         if !pressed {
@@ -573,6 +744,301 @@ fn process_mapping_report(
     }
 }
 
+fn process_pointer_report(
+    app: &tauri::AppHandle,
+    report: &InputReport,
+    orientation: Option<&OrientationFrame>,
+    product_id: u16,
+    mapping_state: &MappingRuntimeState,
+    state: &mut PointerDeviceState,
+) {
+    let active = mapping_state.active.load(Ordering::Relaxed);
+    let pointer = match mapping_state.config.lock() {
+        Ok(config) => config.pointer.clone(),
+        Err(_) => return,
+    };
+    if !active || !pointer.enabled {
+        release_pointer_buttons(state);
+        state.reset_all(orientation);
+        state.mode_switch_started_at = None;
+        state.mode_switch_fired = false;
+        return;
+    }
+
+    let controls = pressed_button_controls(report, product_id);
+    let mode_switch_control = if product_id == JOYCON_RIGHT_PRODUCT_ID {
+        "joycon_right.plus"
+    } else {
+        "joycon_left.minus"
+    };
+    let mode_switch_pressed = controls.contains(&mode_switch_control);
+    if mode_switch_pressed {
+        let started_at = state
+            .mode_switch_started_at
+            .get_or_insert_with(Instant::now);
+        if !state.mode_switch_fired
+            && started_at.elapsed() >= Duration::from_millis(pointer.mode_switch_hold_ms)
+        {
+            state.mode_switch_fired = true;
+            let can_toggle = mapping_state
+                .pointer_mode_changed_at
+                .lock()
+                .map(|changed_at| changed_at.elapsed() >= POINTER_MODE_SWITCH_GUARD)
+                .unwrap_or(false);
+            if can_toggle {
+                let current =
+                    PointerMode::from_u8(mapping_state.pointer_mode.load(Ordering::Relaxed));
+                let next = if current == PointerMode::Stick {
+                    PointerMode::Motion
+                } else {
+                    PointerMode::Stick
+                };
+                mapping_state
+                    .pointer_mode
+                    .store(next as u8, Ordering::Relaxed);
+                if let Ok(mut changed_at) = mapping_state.pointer_mode_changed_at.lock() {
+                    *changed_at = Instant::now();
+                }
+                release_pointer_buttons(state);
+                state.last_mode = next;
+                state.reset_all(orientation);
+                let _ = app.emit("pointer-mode-changed", next.as_str());
+            }
+        }
+    } else {
+        state.mode_switch_started_at = None;
+        state.mode_switch_fired = false;
+    }
+
+    let mode = PointerMode::from_u8(mapping_state.pointer_mode.load(Ordering::Relaxed));
+    if mode != state.last_mode {
+        release_pointer_buttons(state);
+        state.last_mode = mode;
+        state.reset_all(orientation);
+    }
+    if mapping_state
+        .pointer_mode_changed_at
+        .lock()
+        .map(|changed_at| changed_at.elapsed() < POINTER_MODE_SWITCH_GUARD)
+        .unwrap_or(true)
+    {
+        return;
+    }
+
+    if !platform_pointer::accessibility_granted() {
+        release_pointer_buttons(state);
+        state.reset_all(orientation);
+        if !state.permission_error_reported {
+            state.permission_error_reported = true;
+            let _ = app.emit(
+                "pointer-runtime-error",
+                "Mouse control is blocked by macOS Accessibility. Grant access to this running VibeCon build, then quit and reopen it.",
+            );
+        }
+        return;
+    }
+    state.permission_error_reported = false;
+
+    let (shoulder, trigger) = if product_id == JOYCON_RIGHT_PRODUCT_ID {
+        (
+            controls.contains(&"joycon_right.r"),
+            controls.contains(&"joycon_right.zr"),
+        )
+    } else {
+        (
+            controls.contains(&"joycon_left.l"),
+            controls.contains(&"joycon_left.zl"),
+        )
+    };
+    let (left_down, right_down) = match mode {
+        PointerMode::Stick => (shoulder, trigger),
+        PointerMode::Motion => (shoulder && !trigger, shoulder && trigger),
+    };
+    let output_result = (|| {
+        update_pointer_button(state, PointerButton::Left, left_down)?;
+        update_pointer_button(state, PointerButton::Right, right_down)?;
+
+        match mode {
+            PointerMode::Stick => process_stick_pointer(report, product_id, &pointer.stick, state),
+            PointerMode::Motion => {
+                if trigger {
+                    state.reset_motion(orientation);
+                    Ok(())
+                } else {
+                    process_motion_pointer(orientation, &pointer.motion, state)
+                }
+            }
+        }
+    })();
+    if let Err(error) = output_result {
+        state.reset_all(orientation);
+        if !state.permission_error_reported {
+            state.permission_error_reported = true;
+            let _ = app.emit(
+                "pointer-runtime-error",
+                format!("Mouse output failed: {error}"),
+            );
+        }
+    } else {
+        state.permission_error_reported = false;
+    }
+}
+
+fn process_stick_pointer(
+    report: &InputReport,
+    product_id: u16,
+    config: &StickPointerConfig,
+    state: &mut PointerDeviceState,
+) -> Result<(), String> {
+    let stick = if product_id == JOYCON_RIGHT_PRODUCT_ID {
+        report.right_stick.as_ref()
+    } else {
+        report.left_stick.as_ref()
+    };
+    let Some(stick) = stick else {
+        state.last_report_at = None;
+        return Ok(());
+    };
+    let now = Instant::now();
+    let elapsed = state
+        .last_report_at
+        .map(|previous| now.duration_since(previous).as_secs_f32())
+        .unwrap_or(0.0)
+        .clamp(0.0, 0.05);
+    state.last_report_at = Some(now);
+    if elapsed == 0.0 {
+        return Ok(());
+    }
+    let screen_y = if product_id == JOYCON_RIGHT_PRODUCT_ID {
+        -stick.normalized_y
+    } else {
+        stick.normalized_y
+    };
+    let (x, y) = pointer_stick_velocity(
+        stick.normalized_x,
+        screen_y,
+        config.deadzone,
+        config.max_speed,
+        config.acceleration,
+    );
+    post_pointer_delta(x * elapsed, y * elapsed, state)
+}
+
+fn pointer_stick_velocity(
+    x: f32,
+    y: f32,
+    deadzone: f32,
+    max_speed: f32,
+    acceleration: f32,
+) -> (f32, f32) {
+    let magnitude = x.hypot(y).min(1.0);
+    let deadzone = deadzone.clamp(0.0, 0.95);
+    if magnitude <= deadzone || magnitude == 0.0 {
+        return (0.0, 0.0);
+    }
+    let normalized = ((magnitude - deadzone) / (1.0 - deadzone)).clamp(0.0, 1.0);
+    let speed = max_speed.max(0.0) * normalized.powf(acceleration.max(0.1));
+    (x / magnitude * speed, y / magnitude * speed)
+}
+
+fn process_motion_pointer(
+    orientation: Option<&OrientationFrame>,
+    config: &MotionPointerConfig,
+    state: &mut PointerDeviceState,
+) -> Result<(), String> {
+    let Some(orientation) = orientation else {
+        return Ok(());
+    };
+    let current = orientation_components(orientation);
+    let Some(previous) = state.previous_orientation.replace(current) else {
+        return Ok(());
+    };
+    let [rotation_x, _, rotation_z] = quaternion_delta_degrees(current, previous);
+    let threshold = config.noise_threshold.max(0.0);
+    let horizontal = if rotation_z.abs() >= threshold {
+        rotation_z
+    } else {
+        0.0
+    };
+    let vertical = if rotation_x.abs() >= threshold {
+        rotation_x
+    } else {
+        0.0
+    };
+    post_pointer_delta(
+        horizontal * config.sensitivity,
+        -vertical * config.sensitivity * config.vertical_ratio,
+        state,
+    )
+}
+
+fn quaternion_delta_degrees(current: [f32; 4], previous: [f32; 4]) -> [f32; 3] {
+    let inverse_previous = [-previous[0], -previous[1], -previous[2], previous[3]];
+    let mut delta = multiply_quaternion(current, inverse_previous);
+    if delta[3] < 0.0 {
+        delta
+            .iter_mut()
+            .for_each(|component| *component = -*component);
+    }
+    let vector_length = delta[0].hypot(delta[1]).hypot(delta[2]);
+    if vector_length <= f32::EPSILON {
+        return [0.0; 3];
+    }
+    let angle = 2.0 * vector_length.atan2(delta[3]) * 180.0 / std::f32::consts::PI;
+    [
+        delta[0] / vector_length * angle,
+        delta[1] / vector_length * angle,
+        delta[2] / vector_length * angle,
+    ]
+}
+
+fn multiply_quaternion(left: [f32; 4], right: [f32; 4]) -> [f32; 4] {
+    let [ax, ay, az, aw] = left;
+    let [bx, by, bz, bw] = right;
+    [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ]
+}
+
+fn update_pointer_button(
+    state: &mut PointerDeviceState,
+    button: PointerButton,
+    down: bool,
+) -> Result<(), String> {
+    let slot = match button {
+        PointerButton::Left => &mut state.left_button_down,
+        PointerButton::Right => &mut state.right_button_down,
+    };
+    if *slot == down {
+        return Ok(());
+    }
+    platform_pointer::post_button(button, down)?;
+    *slot = down;
+    Ok(())
+}
+
+fn release_pointer_buttons(state: &mut PointerDeviceState) {
+    let _ = update_pointer_button(state, PointerButton::Left, false);
+    let _ = update_pointer_button(state, PointerButton::Right, false);
+}
+
+fn post_pointer_delta(dx: f32, dy: f32, state: &mut PointerDeviceState) -> Result<(), String> {
+    state.subpixel_x += dx;
+    state.subpixel_y += dy;
+    if state.subpixel_x.abs() < 0.35 && state.subpixel_y.abs() < 0.35 {
+        return Ok(());
+    }
+    let whole_x = state.subpixel_x;
+    let whole_y = state.subpixel_y;
+    platform_pointer::post_move(whole_x, whole_y, state.left_button_down)?;
+    state.subpixel_x = 0.0;
+    state.subpixel_y = 0.0;
+    Ok(())
+}
+
 fn control_is_pressed(control: &str, report: &InputReport, product_id: u16) -> bool {
     match control {
         "joycon_left.stick_left" if product_id == JOYCON_LEFT_PRODUCT_ID => report
@@ -583,9 +1049,7 @@ fn control_is_pressed(control: &str, report: &InputReport, product_id: u16) -> b
             .left_stick
             .as_ref()
             .is_some_and(|stick| stick.normalized_x >= STICK_TRIGGER_THRESHOLD),
-        _ => pressed_button_controls(report, product_id)
-            .iter()
-            .any(|target| *target == control),
+        _ => pressed_button_controls(report, product_id).contains(&control),
     }
 }
 
@@ -685,6 +1149,14 @@ fn pressed_button_controls(report: &InputReport, product_id: u16) -> Vec<&'stati
                     ("joycon_right.zr", 0x80),
                 ],
             );
+            add_bits(
+                extra,
+                &[
+                    ("joycon_right.plus", 0x01),
+                    ("joycon_right.stick_press", 0x04),
+                    ("joycon_right.home", 0x20),
+                ],
+            );
         }
         _ => {}
     }
@@ -724,12 +1196,23 @@ fn set_mapping_runtime(
     active: bool,
 ) -> Result<(), String> {
     validate_mapping_config(&config)?;
+    if !active || !config.pointer.enabled {
+        release_system_pointer_buttons();
+    }
+    state
+        .pointer_mode
+        .store(config.pointer.mode as u8, Ordering::Relaxed);
     *state
         .config
         .lock()
         .map_err(|_| "Mapping runtime is unavailable")? = config;
     state.active.store(active, Ordering::Relaxed);
     Ok(())
+}
+
+fn release_system_pointer_buttons() {
+    let _ = platform_pointer::post_button(PointerButton::Left, false);
+    let _ = platform_pointer::post_button(PointerButton::Right, false);
 }
 
 fn focus_codex() -> Result<(), String> {
@@ -751,7 +1234,7 @@ fn focus_codex() -> Result<(), String> {
 fn switch_window(direction: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        if !macos_accessibility_trusted() {
+        if !platform_pointer::accessibility_granted() {
             return Err("Accessibility is not granted to this running VibeCon process. Quit the app, enable VibeCon.app in System Settings → Privacy & Security → Accessibility, then reopen VibeCon.app.".to_owned());
         }
         // Post the shortcut directly through Quartz instead of spawning
@@ -897,53 +1380,101 @@ fn post_key(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn macos_accessibility_trusted() -> bool {
-    // SAFETY: AXIsProcessTrusted has no arguments and only reports TCC state.
-    unsafe { AXIsProcessTrusted() }
+#[tauri::command]
+fn pointer_runtime_status(state: tauri::State<MappingRuntimeState>) -> PointerRuntimeStatus {
+    let pointer = state
+        .config
+        .lock()
+        .map(|config| config.pointer.clone())
+        .unwrap_or_default();
+    let mode = PointerMode::from_u8(state.pointer_mode.load(Ordering::Relaxed));
+    PointerRuntimeStatus {
+        active: state.active.load(Ordering::Relaxed),
+        enabled: pointer.enabled,
+        mode: mode.as_str(),
+        accessibility_granted: platform_pointer::accessibility_granted(),
+        backend: platform_pointer::backend_name(),
+        executable_path: platform_pointer::permission_target(),
+    }
+}
+
+#[tauri::command]
+fn request_accessibility_permission() -> Result<bool, String> {
+    platform_pointer::request_accessibility_permission()
+}
+
+fn verify_pointer_move(
+    requested_x: f32,
+    requested_y: f32,
+) -> Result<PointerMoveTestResult, String> {
+    let before = platform_pointer::cursor_location()?;
+    platform_pointer::post_move(requested_x, requested_y, false)?;
+    thread::sleep(Duration::from_millis(80));
+    let after = platform_pointer::cursor_location()?;
+    let actual_x = after.0 - before.0;
+    let actual_y = after.1 - before.1;
+    if actual_x.hypot(actual_y) < 1.0 {
+        return Err(
+            "macOS accepted the CGEvent call, but the cursor position did not change. Recheck Accessibility for this exact VibeCon build and reopen the app."
+                .to_owned(),
+        );
+    }
+    Ok(PointerMoveTestResult {
+        requested_x: f64::from(requested_x),
+        requested_y: f64::from(requested_y),
+        actual_x,
+        actual_y,
+    })
+}
+
+#[tauri::command]
+fn test_pointer_move() -> Result<PointerMoveTestResult, String> {
+    verify_pointer_move(80.0, 60.0)
+}
+
+#[cfg(debug_assertions)]
+pub fn run_pointer_self_test() -> Result<String, String> {
+    if !platform_pointer::accessibility_granted() {
+        return Err(format!(
+            "Accessibility is not granted to this signed VibeCon development identity ({})",
+            platform_pointer::permission_target(),
+        ));
+    }
+    let result = verify_pointer_move(80.0, 60.0)?;
+    Ok(format!(
+        "Accessibility granted; requested ({:.0}, {:.0}) px and observed ({:.1}, {:.1}) px",
+        result.requested_x, result.requested_y, result.actual_x, result.actual_y,
+    ))
+}
+
+#[cfg(debug_assertions)]
+pub fn request_pointer_accessibility() -> Result<String, String> {
+    let granted = platform_pointer::request_accessibility_permission()?;
+    Ok(if granted {
+        "Accessibility is already granted to VibeCon Dev.app".to_owned()
+    } else {
+        format!(
+            "Accessibility was requested for {}; enable VibeCon Dev in System Settings, then restart pnpm tauri dev",
+            platform_pointer::permission_target(),
+        )
+    })
 }
 
 #[tauri::command]
 fn mapping_accessibility_status() -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    {
-        Ok(if macos_accessibility_trusted() {
-            "Accessibility: granted to this running VibeCon process.".to_owned()
-        } else {
-            format!(
-                "Accessibility: not granted to this running process. Remove the old VibeCon entry, then add this exact app and reopen it: {}",
-                running_app_path(),
-            )
-        })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("Window switching is not implemented for this platform yet".to_owned())
-    }
+    Ok(if platform_pointer::accessibility_granted() {
+        "Accessibility: granted to this running VibeCon process.".to_owned()
+    } else {
+        format!(
+            "Accessibility: not granted to this running process. Grant access to this exact build and reopen it: {}",
+            platform_pointer::permission_target(),
+        )
+    })
 }
 
 #[tauri::command]
 fn open_accessibility_settings() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-            .spawn()
-            .map_err(|error| format!("Could not open macOS Accessibility settings: {error}"))?;
-        Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("Accessibility settings are not implemented for this platform yet".to_owned())
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn running_app_path() -> String {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.ancestors().nth(3).map(|app| app.display().to_string()))
-        .unwrap_or_else(|| "could not determine the current VibeCon.app path".to_owned())
+    platform_pointer::open_accessibility_settings()
 }
 
 fn annotation_path() -> Result<PathBuf, String> {
@@ -1052,6 +1583,29 @@ fn validate_mapping_config(config: &MappingConfig) -> Result<(), String> {
         .any(|preset| preset.id == config.active_preset_id)
     {
         return Err("The active mapping preset does not exist".to_owned());
+    }
+    if !(250..=2000).contains(&config.pointer.mode_switch_hold_ms) {
+        return Err("Pointer mode switch hold time must be between 250 and 2000 ms".to_owned());
+    }
+    let stick = &config.pointer.stick;
+    if !stick.deadzone.is_finite()
+        || !(0.0..=0.8).contains(&stick.deadzone)
+        || !stick.max_speed.is_finite()
+        || !(100.0..=4000.0).contains(&stick.max_speed)
+        || !stick.acceleration.is_finite()
+        || !(0.5..=4.0).contains(&stick.acceleration)
+    {
+        return Err("Pointer stick settings are outside their supported range".to_owned());
+    }
+    let motion = &config.pointer.motion;
+    if !motion.sensitivity.is_finite()
+        || !(0.5..=30.0).contains(&motion.sensitivity)
+        || !motion.vertical_ratio.is_finite()
+        || !(0.25..=2.0).contains(&motion.vertical_ratio)
+        || !motion.noise_threshold.is_finite()
+        || !(0.0..=0.5).contains(&motion.noise_threshold)
+    {
+        return Err("Pointer motion settings are outside their supported range".to_owned());
     }
     let mut preset_ids = HashSet::new();
     let mut binding_ids = HashSet::new();
@@ -1330,6 +1884,9 @@ pub fn run() {
             set_mapping_runtime,
             switch_window,
             test_joycon_vibration,
+            test_pointer_move,
+            pointer_runtime_status,
+            request_accessibility_permission,
             mapping_accessibility_status,
             open_accessibility_settings,
             load_mapping_config,
@@ -1352,9 +1909,53 @@ mod tests {
     }
 
     #[test]
+    fn legacy_v3_mapping_config_receives_default_pointer_settings() {
+        let config: MappingConfig = serde_json::from_str(
+            r#"{"version":3,"activePresetId":"inspect-only","presets":[{"id":"inspect-only","name":"Inspect Only","enabled":false,"bindings":[]}]}"#,
+        )
+        .expect("v3 config without pointer settings remains readable");
+        assert!(!config.pointer.enabled);
+        assert_eq!(config.pointer.mode, PointerMode::Stick);
+        assert_eq!(config.pointer.mode_switch_hold_ms, 600);
+    }
+
+    #[test]
+    fn stick_pointer_deadzone_and_acceleration_are_radial() {
+        assert_eq!(
+            pointer_stick_velocity(0.05, 0.05, 0.12, 1400.0, 1.6),
+            (0.0, 0.0)
+        );
+        let (x, y) = pointer_stick_velocity(1.0, 0.0, 0.12, 1400.0, 1.6);
+        assert!((x - 1400.0).abs() < 0.001);
+        assert!(y.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn quaternion_delta_reports_rotation_around_z() {
+        let half_angle = 5.0_f32.to_radians();
+        let current = [0.0, 0.0, half_angle.sin(), half_angle.cos()];
+        let delta = quaternion_delta_degrees(current, [0.0, 0.0, 0.0, 1.0]);
+        assert!(delta[0].abs() < 0.001);
+        assert!(delta[1].abs() < 0.001);
+        assert!((delta[2] - 10.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn compact_right_report_exposes_plus_for_mode_switching() {
+        let mut bytes = vec![0_u8; 12];
+        bytes[0] = 0x3f;
+        bytes[2] = 0x01;
+        let report = report_from_bytes(bytes, JOYCON_RIGHT_PRODUCT_ID);
+        assert!(pressed_button_controls(&report, JOYCON_RIGHT_PRODUCT_ID)
+            .contains(&"joycon_right.plus"));
+    }
+
+    #[test]
     fn v2_mapping_config_prunes_unverified_builtins() {
-        let mut config = MappingConfig::default();
-        config.version = 2;
+        let mut config = MappingConfig {
+            version: 2,
+            ..MappingConfig::default()
+        };
         config.presets.push(MappingPreset {
             id: "keyboard-focus".to_owned(),
             name: "Keyboard Focus".to_owned(),

@@ -15,6 +15,8 @@ import type {
   LogEntry,
   MappingConfig,
   OrientationFrame,
+  PointerMoveTestResult,
+  PointerRuntimeStatus,
   Stick,
 } from "./types";
 import { RingBuffer } from "./utils/ring-buffer";
@@ -42,14 +44,46 @@ function defaultMappingConfig(): MappingConfig {
         name: "Codex Cowork",
         enabled: true,
         bindings: [
-          { id: "window-previous", control: "joycon_left.stick_left", action: "window_previous", enabled: true },
-          { id: "window-next", control: "joycon_left.stick_right", action: "window_next", enabled: true },
-          { id: "focus-codex-left", control: "joycon_left.dpad_up", action: "focus_codex", enabled: true },
-          { id: "focus-codex-right", control: "joycon_right.x", action: "focus_codex", enabled: true },
+          {
+            id: "window-previous",
+            control: "joycon_left.stick_left",
+            action: "window_previous",
+            enabled: true,
+          },
+          {
+            id: "window-next",
+            control: "joycon_left.stick_right",
+            action: "window_next",
+            enabled: true,
+          },
+          {
+            id: "focus-codex-left",
+            control: "joycon_left.dpad_up",
+            action: "focus_codex",
+            enabled: true,
+          },
+          {
+            id: "focus-codex-right",
+            control: "joycon_right.x",
+            action: "focus_codex",
+            enabled: true,
+          },
         ],
       },
-      { id: "inspect-only", name: "Inspect Only", enabled: false, bindings: [] },
+      {
+        id: "inspect-only",
+        name: "Inspect Only",
+        enabled: false,
+        bindings: [],
+      },
     ],
+    pointer: {
+      enabled: false,
+      mode: "stick",
+      modeSwitchHoldMs: 600,
+      stick: { deadzone: 0.12, maxSpeed: 1400, acceleration: 1.6 },
+      motion: { sensitivity: 8, verticalRatio: 0.85, noiseThreshold: 0.015 },
+    },
   };
 }
 
@@ -80,14 +114,11 @@ const activeControls = computed(() => [
   ...activeControlsBySide.value.right,
 ]);
 const mappingInputStatus = computed(() => {
-  const leftController = selectedControllers.value.find(
-    ({ product_id }) => product_id === 0x2006,
-  );
-  if (!leftController)
-    return t("mapping.noLeft");
-  return t("mapping.selected", { name: leftController.name });
+  if (!selectedControllers.value.length) return t("mapping.noController");
+  return t("mapping.selected", {
+    name: selectedControllers.value.map(({ name }) => name).join(" + "),
+  });
 });
-const recentControls = ref<string[]>([]);
 const buttonsReadout = ref("D-pad 00 · waiting for input");
 const dialog = ref<HTMLDialogElement>();
 const selectedLog = ref<LogEntry>();
@@ -95,14 +126,16 @@ const annotationKind = ref<"stick" | "button">("stick");
 const annotationTarget = ref<string>();
 const mappingFeedback = ref(t("mapping.initial"));
 const accessibilityGranted = ref(false);
+const pointerRuntimeStatus = ref<PointerRuntimeStatus | null>(null);
 const buttonPhase = ref<"pressed" | "released">("pressed");
 const stickPhase = ref<"moved" | "reset">("moved");
 let unlistenInput: UnlistenFn | undefined;
 let unlistenError: UnlistenFn | undefined;
+let unlistenPointerMode: UnlistenFn | undefined;
+let unlistenPointerError: UnlistenFn | undefined;
 const lastPresentedAt = new Map<string, number>();
 const lastKeyOperation = new Map<string, string>();
 const lastIncomingReport = new Map<string, InputReport>();
-let recentControlsTimer: ReturnType<typeof setTimeout> | undefined;
 
 watch(activePage, (page) => {
   if (page === "mappings") void checkMappingAccessibility();
@@ -151,20 +184,6 @@ const buttonNames: Record<string, string> = {
   "joycon_left.zl": "ZL",
 };
 
-const nubTransform = computed(() => {
-  return stickTransform(leftStick.value);
-});
-const rightNubTransform = computed(() =>
-  stickTransform(rightStick.value, true),
-);
-
-function stickTransform(stick: Stick | null, invertY = false) {
-  if (!stick) return "translate(0, 0)";
-  const x = Math.max(-1, Math.min(1, stick.normalized_x)) * 16;
-  const y =
-    Math.max(-1, Math.min(1, stick.normalized_y)) * (invertY ? -16 : 16);
-  return `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
-}
 const selectedReportText = computed(() =>
   selectedLog.value
     ? `report 0x${hex(selectedLog.value.report.report_id)} · ${selectedLog.value.report.bytes.map(hex).join(" ")}`
@@ -237,7 +256,8 @@ function renderStick(stick: Stick | null) {
 }
 function renderImu(imu: ImuSample | null) {
   if (!imu) return t("debug.noImu");
-  const format = ([x, y, z]: [number, number, number]) => `x ${x}\ny ${y}\nz ${z}`;
+  const format = ([x, y, z]: [number, number, number]) =>
+    `x ${x}\ny ${y}\nz ${z}`;
   return `accel\n${format(imu.acceleration)}\n\ngyro\n${format(imu.gyroscope)}`;
 }
 function labelText(label: Label, legacy = false) {
@@ -432,9 +452,8 @@ function applyReport(
     rightImu.value = report.imu;
     if (orientation) rightOrientation.value = orientation;
   }
-  // Mapping only needs the stick direction. Keep button decoding, logs, and
-  // debug readouts dormant outside the Debug page.
-  if (activePage.value !== "debug") return;
+  // Keep the shared Joy-Con stage live on both tabs. Only raw log retention is
+  // paused on Mappings; the visual input state remains useful while tuning.
   if (!report.buttons) {
     activeControlsBySide.value[side] = [];
     buttonsReadout.value = "No decoded button data";
@@ -567,19 +586,46 @@ function applyReport(
 }
 async function checkMappingAccessibility() {
   if (!isTauriDesktop) return;
-  const result = await invoke<string>("mapping_accessibility_status").catch(
-    (error) => `Could not check Accessibility: ${String(error)}`,
-  );
-  accessibilityGranted.value = result.startsWith("Accessibility: granted");
-  mappingFeedback.value = result;
+  try {
+    const result = await invoke<PointerRuntimeStatus>("pointer_runtime_status");
+    pointerRuntimeStatus.value = result;
+    accessibilityGranted.value = result.accessibilityGranted;
+    mappingFeedback.value = result.accessibilityGranted
+      ? t("mapping.accessibilityReady")
+      : t("mapping.accessibilityBlocked", { path: result.executablePath });
+  } catch (error) {
+    mappingFeedback.value = `Could not check Accessibility: ${String(error)}`;
+  }
 }
-function openAccessibilitySettings() {
-  void invoke("open_accessibility_settings")
-    .then(() => {
-      mappingFeedback.value = t("mapping.opened");
+function requestAccessibilityPermission() {
+  mappingFeedback.value = t("mapping.requestingAccessibility");
+  void invoke<boolean>("request_accessibility_permission")
+    .then((granted) => {
+      accessibilityGranted.value = granted;
+      mappingFeedback.value = granted
+        ? t("mapping.accessibilityReady")
+        : t("mapping.opened");
+      void checkMappingAccessibility();
     })
     .catch((error) => {
-      mappingFeedback.value = `Could not open Accessibility settings: ${String(error)}`;
+      mappingFeedback.value = `Could not request Accessibility: ${String(error)}`;
+    });
+}
+function testPointerMovement() {
+  mappingFeedback.value = t("mapping.pointerTestSending");
+  void invoke<PointerMoveTestResult>("test_pointer_move")
+    .then((result) => {
+      mappingFeedback.value = t("mapping.pointerTestSent", {
+        x: result.actualX.toFixed(0),
+        y: result.actualY.toFixed(0),
+      });
+      void checkMappingAccessibility();
+    })
+    .catch((error) => {
+      mappingFeedback.value = t("mapping.pointerTestFailed", {
+        error: String(error),
+      });
+      void checkMappingAccessibility();
     });
 }
 function testWindowSwitch() {
@@ -646,7 +692,7 @@ function resetMappingConfig() {
     .catch(showError);
 }
 async function copyAgentPrompt() {
-  const prompt = `You are editing VibeCon's mapping configuration. Read ~/.vibecon/mappings.json and keep version 3. You may only use the existing controls and safe actions: window_previous, window_next, focus_codex. Preserve valid JSON, unique preset and binding ids, then explain the change. Do not add shell commands or arbitrary automation.`;
+  const prompt = `You are editing VibeCon's local configuration at ~/.vibecon/mappings.json. Keep version 3 and preserve the pointer block. Pointer modes are stick and motion; the default mode switch is a 600 ms hold on Joy-Con (L) minus or Joy-Con (R) plus. In stick mode, L/R is left click and ZL/ZR is right click. In motion mode, L/R is left click, ZL+L or ZR+R is right click, and holding ZL/ZR freezes then recenters on release. Shortcut bindings may only use the existing controls and safe actions window_previous, window_next, and focus_codex. Preserve valid JSON and unique ids, then explain the change. Do not add shell commands or arbitrary automation.`;
   try {
     await navigator.clipboard.writeText(prompt);
     mappingFeedback.value = t("mapping.copied");
@@ -667,19 +713,7 @@ function setActiveControls(next: string[], side: "left" | "right") {
   ) {
     return;
   }
-  const newlyPressed = next.filter(
-    (target) => !current.includes(target),
-  );
   activeControlsBySide.value[side] = next;
-  if (!newlyPressed.length) return;
-  recentControls.value = [
-    ...new Set([...recentControls.value, ...newlyPressed]),
-  ];
-  if (recentControlsTimer) clearTimeout(recentControlsTimer);
-  recentControlsTimer = setTimeout(() => {
-    recentControls.value = [];
-    recentControlsTimer = undefined;
-  }, 220);
 }
 function showError(error: unknown) {
   status.value = String(error);
@@ -813,12 +847,12 @@ onMounted(async () => {
       return [];
     },
   );
-  const loadedMappingConfig = await invoke<MappingConfig>("load_mapping_config").catch(
-    (error) => {
-      showError(error);
-      return mappingConfig.value;
-    },
-  );
+  const loadedMappingConfig = await invoke<MappingConfig>(
+    "load_mapping_config",
+  ).catch((error) => {
+    showError(error);
+    return mappingConfig.value;
+  });
   mappingConfig.value = loadedMappingConfig;
   await syncMappingRuntime();
   unlistenInput = await listen<StreamEvent>("joycon-input", ({ payload }) => {
@@ -836,12 +870,32 @@ onMounted(async () => {
   unlistenError = await listen<string>("joycon-stream-error", ({ payload }) =>
     showError(payload),
   );
+  unlistenPointerMode = await listen<"stick" | "motion">(
+    "pointer-mode-changed",
+    ({ payload }) => {
+      mappingConfig.value.pointer.mode = payload;
+      mappingFeedback.value = t(
+        payload === "stick"
+          ? "mapping.modeChangedStick"
+          : "mapping.modeChangedMotion",
+      );
+    },
+  );
+  unlistenPointerError = await listen<string>(
+    "pointer-runtime-error",
+    ({ payload }) => {
+      accessibilityGranted.value = false;
+      mappingFeedback.value = payload;
+      void checkMappingAccessibility();
+    },
+  );
   await refreshControllers();
 });
 onBeforeUnmount(() => {
   unlistenInput?.();
   unlistenError?.();
-  if (recentControlsTimer) clearTimeout(recentControlsTimer);
+  unlistenPointerMode?.();
+  unlistenPointerError?.();
   if (isTauriDesktop) void invoke("stop_joycon_stream");
 });
 </script>
@@ -855,8 +909,19 @@ onBeforeUnmount(() => {
         <p class="subtitle">{{ t("app.subtitle") }}</p>
       </div>
       <div class="header-actions">
-        <label class="language-picker"><span class="sr-only">{{ t("app.language") }}</span><select :value="locale" @change="setLocale(($event.target as HTMLSelectElement).value)"><option value="en">EN</option><option value="zh-CN">中文</option></select></label>
-        <button class="app-button" @click="refreshControllers">{{ t("app.refresh") }}</button>
+        <label class="language-picker"
+          ><span class="sr-only">{{ t("app.language") }}</span
+          ><select
+            :value="locale"
+            @change="setLocale(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="en">EN</option>
+            <option value="zh-CN">中文</option>
+          </select></label
+        >
+        <button class="app-button" @click="refreshControllers">
+          {{ t("app.refresh") }}
+        </button>
       </div>
     </header>
     <nav class="app-tabs" aria-label="Application pages">
@@ -874,22 +939,8 @@ onBeforeUnmount(() => {
         {{ t("app.mappings") }}
       </button>
     </nav>
-    <MappingsPage
-      v-if="activePage === 'mappings'"
-      :config="mappingConfig"
-      :input-status="mappingInputStatus"
-      :feedback="mappingFeedback"
-      :accessibility-granted="accessibilityGranted"
-      @select-preset="selectPreset"
-      @update-config="mappingConfig = $event"
-      @copy-prompt="copyAgentPrompt"
-      @test-window="testWindowSwitch"
-      @test-vibration="testJoyConVibration"
-      @open-accessibility="openAccessibilitySettings"
-      @reset="resetMappingConfig"
-    />
     <DebugPage
-      v-if="activePage === 'debug'"
+      :show-logs="activePage === 'debug'"
       :controllers="controllers"
       :selected-controllers="selectedControllers"
       :status="status"
@@ -916,117 +967,22 @@ onBeforeUnmount(() => {
       @clear="clearLog"
       @annotate="openAnnotation"
     />
-    <!-- Transitional source retained while the page extraction settles; DebugPage renders this UI. -->
-    <section v-if="false" class="visualizer panel">
-      <div class="section-heading">
-        <div>
-          <h2 class="section-title">{{ t("debug.live") }}</h2>
-          <p class="hint">
-            {{ t("debug.visualizerHint") }}
-          </p>
-        </div>
-        <output class="raw-buttons">{{ buttonsReadout }}</output>
-      </div>
-      <div class="joycon-stage">
-        <JoyCon
-          :active-controls="activeControls"
-          :recent-controls="recentControls"
-          :nub-transform="nubTransform"
-        />
-        <div class="axis-readout">
-          <span class="readout-label">{{ t("debug.primaryStick") }}</span
-          ><output class="axis-output">{{ renderStick(leftStick) }}</output
-          ><span class="readout-label">{{ t("debug.secondaryAxes") }}</span
-          ><output class="axis-output">{{ renderStick(rightStick) }}</output
-          ><span class="readout-label">{{ t("debug.leftImu") }}</span
-          ><output class="axis-output imu-output">{{ renderImu(leftImu) }}</output
-          ><span class="readout-label">{{ t("debug.rightImu") }}</span
-          ><output class="axis-output imu-output">{{ renderImu(rightImu) }}</output>
-        </div>
-        <JoyCon
-          side="right"
-          :active-controls="activeControls"
-          :recent-controls="recentControls"
-          :nub-transform="rightNubTransform"
-        />
-      </div>
-    </section>
-    <section v-if="false" class="panel transcript-panel">
-      <div class="section-heading log-heading">
-        <div>
-          <h2 class="section-title">{{ t("debug.reports") }}</h2>
-          <p class="hint">
-            {{ t("debug.reportsHint") }}
-          </p>
-        </div>
-        <div class="log-actions">
-          <label
-            >{{ t("debug.logPolicy") }}<select
-              v-model="sampleRate"
-              @change="
-                lastPresentedAt.clear();
-                lastKeyOperation.clear();
-              "
-            >
-              <option value="key">{{ t("debug.keyOperations") }}</option>
-              <option value="75">{{ t("debug.snapshots") }}</option>
-              <option value="60">60 Hz</option>
-              <option value="30">30 Hz</option>
-              <option value="10">10 Hz</option>
-              <option value="all">{{ t("debug.allReports") }}</option>
-            </select></label
-          ><button class="secondary" @click="clearLog">{{ t("debug.clear") }}</button>
-        </div>
-      </div>
-      <div class="transcript">
-        <template v-if="groupedLogs.length"
-          ><div
-            v-for="group in groupedLogs"
-            :key="`${group.timestamp.getTime()}-${group.entries.map(({ device_id }) => device_id).join()}`"
-            class="log-group"
-          >
-            <time>{{ group.timestamp.toLocaleTimeString() }}</time>
-            <div class="log-lines">
-              <button
-                v-for="entry in group.entries"
-                :key="`${entry.device_id}-${fingerprint(entry.report)}`"
-                class="log-row"
-                @click="openAnnotation(entry)"
-              >
-                <code
-                  ><b>{{
-                    controllers.find(({ id }) => id === entry.device_id)
-                      ?.product_id === 0x2007
-                      ? "R"
-                      : "L"
-                  }}</b>
-                  {{ formatReport(entry.report) }}</code
-                ><span
-                  v-if="builtInLabels(entry).length"
-                  class="annotation-tags"
-                  ><span
-                    v-for="label in builtInLabels(entry)"
-                    :key="`${label.target}-${label.phase}`"
-                    class="annotation-tag built-in"
-                    >{{ labelText(label) }}</span
-                  ></span
-                ><span
-                  v-else-if="savedAnnotation(entry)"
-                  class="annotation-tag"
-                  :class="{ legacy: !savedAnnotation(entry)?.previous_report }"
-                  >{{
-                    labelText(
-                      savedAnnotation(entry)!.label,
-                      !savedAnnotation(entry)?.previous_report,
-                    )
-                  }}</span
-                ><span v-else class="label-prompt">{{ t("debug.label") }}</span>
-              </button>
-            </div>
-          </div></template
-        ><span v-else>{{ t("debug.chooseController") }}</span>
-      </div>
-    </section>
+    <MappingsPage
+      v-if="activePage === 'mappings'"
+      :config="mappingConfig"
+      :input-status="mappingInputStatus"
+      :feedback="mappingFeedback"
+      :accessibility-granted="accessibilityGranted"
+      :pointer-runtime-status="pointerRuntimeStatus"
+      @select-preset="selectPreset"
+      @update-config="mappingConfig = $event"
+      @copy-prompt="copyAgentPrompt"
+      @test-window="testWindowSwitch"
+      @test-vibration="testJoyConVibration"
+      @test-pointer="testPointerMovement"
+      @open-accessibility="requestAccessibilityPermission"
+      @reset="resetMappingConfig"
+    />
   </main>
   <dialog ref="dialog" class="annotation-modal">
     <form method="dialog" class="modal-card" @submit.prevent>

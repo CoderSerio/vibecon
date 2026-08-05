@@ -3,7 +3,7 @@ import { useI18n } from "vue-i18n";
 import type { MappingBinding } from "../types";
 
 const props = defineProps<{ binding: MappingBinding }>();
-const emit = defineEmits<{ preview: [target: string | undefined]; toggle: [enabled: boolean] }>();
+const emit = defineEmits<{ toggle: [enabled: boolean] }>();
 const { t } = useI18n();
 
 function controlName(control: string) {
@@ -26,20 +26,10 @@ function actionName(action: MappingBinding["action"]) {
   }[action];
   return t(`mapping.${key}`);
 }
-
-function previewTarget() {
-  return props.binding.control.replace(/\.stick_(left|right)$/, ".stick_press");
-}
 </script>
 
 <template>
-  <article
-    class="binding-card"
-    @mouseenter="emit('preview', previewTarget())"
-    @mouseleave="emit('preview', undefined)"
-    @focusin="emit('preview', previewTarget())"
-    @focusout="emit('preview', undefined)"
-  >
+  <article class="binding-card">
     <div class="binding-route">
       <div class="binding-endpoint">
         <span>{{ t("mapping.control") }}</span>
@@ -56,7 +46,7 @@ function previewTarget() {
         :checked="props.binding.enabled"
         type="checkbox"
         @change="emit('toggle', ($event.target as HTMLInputElement).checked)"
-      >
+      />
       <span class="switch-track" aria-hidden="true"></span>
     </label>
   </article>
