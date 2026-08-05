@@ -26,6 +26,9 @@ const props = defineProps<{
   rightImu: ImuSample | null;
   leftOrientation: OrientationFrame | null;
   rightOrientation: OrientationFrame | null;
+  leftMotionResetKey: number;
+  rightMotionResetKey: number;
+  mappingsPaused: boolean;
   buttonsReadout: string;
   sampleRate: string;
   groupedLogs: LogGroup[];
@@ -42,6 +45,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   selectController: [controller: Controller];
+  updateMappingsPaused: [paused: boolean];
   updateSampleRate: [value: string];
   clear: [];
   annotate: [entry: LogEntry];
@@ -97,7 +101,27 @@ function resetThreePose() {
   <section class="panel">
     <div class="section-heading">
       <h2 class="section-title">{{ t("debug.paired") }}</h2>
-      <span class="status" :class="statusKind">{{ status }}</span>
+      <div class="debug-runtime-tools">
+        <span class="status" :class="statusKind">{{ status }}</span>
+        <label
+          v-if="props.showLogs"
+          class="switch-control compact"
+          :title="t('debug.pauseMappingsHint')"
+        >
+          <input
+            :checked="props.mappingsPaused"
+            type="checkbox"
+            @change="
+              emit(
+                'updateMappingsPaused',
+                ($event.target as HTMLInputElement).checked,
+              )
+            "
+          />
+          <span class="switch-track" aria-hidden="true"></span>
+          <span>{{ t("debug.pauseMappings") }}</span>
+        </label>
+      </div>
     </div>
     <div class="controllers">
       <template v-if="controllers.length">
@@ -185,7 +209,7 @@ function resetThreePose() {
         :active-controls="activeControls"
         :follow-motion="threeFollowMotion"
         :sensitivity="motionSensitivity"
-        :reset-key="threeResetKey"
+        :reset-key="threeResetKey + props.leftMotionResetKey"
         :inspection-view="inspectionView"
       />
       <div class="axis-readout three-axis-readout">
@@ -210,7 +234,7 @@ function resetThreePose() {
         :active-controls="activeControls"
         :follow-motion="threeFollowMotion"
         :sensitivity="motionSensitivity"
-        :reset-key="threeResetKey"
+        :reset-key="threeResetKey + props.rightMotionResetKey"
         :inspection-view="inspectionView"
       />
     </div>

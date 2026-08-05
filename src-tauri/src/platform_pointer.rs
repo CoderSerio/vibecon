@@ -14,6 +14,7 @@ mod platform {
         string::CFString,
     };
     use core_graphics::{
+        display::CGDisplay,
         event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton},
         event_source::{CGEventSource, CGEventSourceStateID},
         geometry::CGPoint,
@@ -73,6 +74,21 @@ mod platform {
         let source = event_source()?;
         let point = current_location(&source)?;
         Ok((point.x, point.y))
+    }
+
+    pub fn display_size_at_cursor() -> Result<(f32, f32), String> {
+        let source = event_source()?;
+        let point = current_location(&source)?;
+        let display = CGDisplay::displays_with_point(point, 1)
+            .ok()
+            .and_then(|(displays, count)| (count > 0).then(|| displays[0]))
+            .map(CGDisplay::new)
+            .unwrap_or_else(CGDisplay::main);
+        let size = display.bounds().size;
+        if size.width <= 0.0 || size.height <= 0.0 {
+            return Err("Could not determine the active macOS display size".to_owned());
+        }
+        Ok((size.width as f32, size.height as f32))
     }
 
     fn event_source() -> Result<CGEventSource, String> {
@@ -148,6 +164,10 @@ mod platform {
     }
 
     pub fn cursor_location() -> Result<(f64, f64), String> {
+        Err("Pointer control is not implemented for this platform yet".to_owned())
+    }
+
+    pub fn display_size_at_cursor() -> Result<(f32, f32), String> {
         Err("Pointer control is not implemented for this platform yet".to_owned())
     }
 

@@ -23,6 +23,37 @@ body {
   background:
     radial-gradient(circle at 82% -10%, #254a43, transparent 38%), #101414;
 }
+.pointer-hud {
+  position: fixed;
+  z-index: 1000;
+  top: 22px;
+  left: 50%;
+  border: 1px solid rgba(125, 230, 196, 0.72);
+  border-radius: 999px;
+  padding: 10px 16px;
+  color: #dcfff6;
+  background: rgba(13, 32, 28, 0.94);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.38);
+  font:
+    750 12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  transform: translateX(-50%);
+  pointer-events: none;
+  backdrop-filter: blur(12px);
+}
+.pointer-hud-enter-active,
+.pointer-hud-leave-active {
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+.pointer-hud-enter-from,
+.pointer-hud-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -8px);
+}
 h1,
 h2,
 p {
@@ -594,6 +625,15 @@ p {
   width: 100%;
   accent-color: #7de6c4;
 }
+.pointer-tuning select {
+  grid-column: 1 / -1;
+  border: 1px solid #46665e;
+  border-radius: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  color: #d9ebe6;
+  background: #10201d;
+}
 .pointer-tuning output {
   color: #c7faeb;
   font:
@@ -809,6 +849,22 @@ p {
 }
 .switch-control.compact input:checked + .switch-track::after {
   transform: translateX(15px);
+}
+.debug-runtime-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  min-width: 0;
+}
+.debug-runtime-tools .status {
+  overflow: hidden;
+  max-width: min(52vw, 620px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.debug-runtime-tools .switch-control {
+  flex: 0 0 auto;
 }
 .empty-preset {
   margin: 0;

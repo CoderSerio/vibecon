@@ -61,8 +61,8 @@ Before it automates anything, VibeCon makes the controller observable: raw HID r
 - Inspect fused orientation diagnostics including remapped gyro axes, angular speed, sample period, accelerometer rejection, and runtime bias estimation.
 - Choose a log policy: key operations, legacy 75 ms snapshots, 60/30/10 Hz samples, or every report; clear the visible log whenever needed.
 - Label captured reports as stick positions or button press/release samples. Labels are stored locally in `~/.vibecon/annotations.jsonl` and shown again for matching reports.
-- **Verified macOS mappings:** **Codex Cowork** uses the Joy-Con (L) stick left/right to switch windows and Joy-Con (L) D-pad Up / Joy-Con (R) X to focus Codex. **Inspect Only** deliberately sends no actions. Every binding is opt-in, stored in `~/.vibecon/mappings.json`, and inactive on the Debug page. New actions are added only after real-device verification.
-- **Experimental pointer control:** Stick mode moves the pointer with either stick; Motion mode uses Joy-Con rotation. L/R provides left click and drag, ZL/ZR provides right click or motion recentering, and holding −/+ switches modes. The independent test reads the cursor position back from macOS, so a successful event-post call is not mistaken for verified movement.
+- **Verified macOS mappings:** **Codex Cowork** uses the Joy-Con (L) stick left/right to switch windows and Joy-Con (L) D-pad Up / Joy-Con (R) X to focus Codex. **Inspect Only** deliberately sends no actions. Every binding is opt-in and stored in `~/.vibecon/mappings.json`. Input logs keep mappings active by default and provide a temporary **Pause mappings** switch for focused debugging. New actions are added only after real-device verification.
+- **Experimental pointer control:** Stick mode moves the pointer with either stick; Motion mode maps a configurable `30°–120°` Joy-Con rotation to the active display with smooth speed-adaptive gain. L/R provides left click and drag, ZL/ZR provides right click or a motion clutch, SL/SR adjusts motion precision, tapping −/+ recenters, and holding −/+ switches modes. The independent test reads the cursor position back from macOS, so a successful event-post call is not mistaken for verified movement.
 - **Experimental Joy-Con output:** a manual, short **Test selected Joy-Con vibration** pulse is available on Mappings. It is never triggered from a binding or task event, and any HID write failure is shown instead of retried.
 
 ### Observed Joy-Con notes
@@ -117,7 +117,7 @@ docs/images/                        Logo and README screenshots
 ```
 
 For the current release candidate's real-device checks, see
-[the 0.0.6 manual QA list](./docs/qa-0.0.6.md).
+[the 0.0.7 manual QA list](./docs/qa-0.0.7.md).
 
 ## Windows
 

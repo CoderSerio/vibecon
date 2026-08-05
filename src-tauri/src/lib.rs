@@ -35,6 +35,7 @@ const JOYCON_RIGHT_PRODUCT_ID: u16 = 0x2007;
 const STICK_TRIGGER_THRESHOLD: f32 = 0.40;
 const MAPPING_COOLDOWN: Duration = Duration::from_millis(240);
 const POINTER_MODE_SWITCH_GUARD: Duration = Duration::from_millis(150);
+const MOTION_SWEEP_PRESETS: [f32; 5] = [30.0, 45.0, 60.0, 90.0, 120.0];
 const JOYCON_IMU_SAMPLE_RATE_HZ: f32 = 208.0;
 const JOYCON_ACCEL_COUNTS_PER_G: f32 = 4096.0;
 const JOYCON_GYRO_COUNTS_PER_DEGREE_PER_SECOND: f32 = 16.4;
@@ -384,15 +385,20 @@ impl Default for StickPointerConfig {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MotionPointerConfig {
-    sensitivity: f32,
+    #[serde(default = "default_motion_sweep_degrees")]
+    sweep_degrees: f32,
     vertical_ratio: f32,
     noise_threshold: f32,
+}
+
+fn default_motion_sweep_degrees() -> f32 {
+    60.0
 }
 
 impl Default for MotionPointerConfig {
     fn default() -> Self {
         Self {
-            sensitivity: 8.0,
+            sweep_degrees: default_motion_sweep_degrees(),
             vertical_ratio: 0.85,
             noise_threshold: 0.015,
         }
@@ -498,9 +504,15 @@ impl Default for BindingTriggerState {
 struct PointerDeviceState {
     last_mode: PointerMode,
     last_report_at: Option<Instant>,
-    previous_orientation: Option<[f32; 4]>,
+    motion_origin_orientation: Option<[f32; 4]>,
+    previous_motion_angles: Option<(f32, f32)>,
     mode_switch_started_at: Option<Instant>,
     mode_switch_fired: bool,
+    sensitivity_decrease_pressed: bool,
+    sensitivity_increase_pressed: bool,
+    last_motion_at: Option<Instant>,
+    display_size: Option<(f32, f32)>,
+    display_size_checked_at: Option<Instant>,
     left_button_down: bool,
     right_button_down: bool,
     subpixel_x: f32,
@@ -508,14 +520,25 @@ struct PointerDeviceState {
     permission_error_reported: bool,
 }
 
+struct PointerFeedbackContext<'a> {
+    device: &'a Arc<Mutex<hidapi::HidDevice>>,
+    stream_state: &'a StreamState,
+}
+
 impl Default for PointerDeviceState {
     fn default() -> Self {
         Self {
             last_mode: PointerMode::Stick,
             last_report_at: None,
-            previous_orientation: None,
+            motion_origin_orientation: None,
+            previous_motion_angles: None,
             mode_switch_started_at: None,
             mode_switch_fired: false,
+            sensitivity_decrease_pressed: false,
+            sensitivity_increase_pressed: false,
+            last_motion_at: None,
+            display_size: None,
+            display_size_checked_at: None,
             left_button_down: false,
             right_button_down: false,
             subpixel_x: 0.0,
@@ -527,7 +550,9 @@ impl Default for PointerDeviceState {
 
 impl PointerDeviceState {
     fn reset_motion(&mut self, orientation: Option<&OrientationFrame>) {
-        self.previous_orientation = orientation.map(orientation_components);
+        self.motion_origin_orientation = orientation.map(orientation_components);
+        self.previous_motion_angles = orientation.map(|_| (0.0, 0.0));
+        self.last_motion_at = None;
         self.subpixel_x = 0.0;
         self.subpixel_y = 0.0;
     }
@@ -672,6 +697,10 @@ fn start_joycon_stream(
                         info.product_id(),
                         &mapping_state,
                         &mut pointer_state,
+                        PointerFeedbackContext {
+                            device: &device,
+                            stream_state: &stream_state,
+                        },
                     );
                     if last_emitted_at.elapsed() >= Duration::from_millis(16) {
                         let event = StreamEvent {
@@ -751,9 +780,10 @@ fn process_pointer_report(
     product_id: u16,
     mapping_state: &MappingRuntimeState,
     state: &mut PointerDeviceState,
+    feedback: PointerFeedbackContext<'_>,
 ) {
     let active = mapping_state.active.load(Ordering::Relaxed);
-    let pointer = match mapping_state.config.lock() {
+    let mut pointer = match mapping_state.config.lock() {
         Ok(config) => config.pointer.clone(),
         Err(_) => return,
     };
@@ -762,6 +792,8 @@ fn process_pointer_report(
         state.reset_all(orientation);
         state.mode_switch_started_at = None;
         state.mode_switch_fired = false;
+        state.sensitivity_decrease_pressed = false;
+        state.sensitivity_increase_pressed = false;
         return;
     }
 
@@ -796,6 +828,9 @@ fn process_pointer_report(
                 mapping_state
                     .pointer_mode
                     .store(next as u8, Ordering::Relaxed);
+                let persist_result = update_runtime_pointer_config(mapping_state, |pointer| {
+                    pointer.mode = next;
+                });
                 if let Ok(mut changed_at) = mapping_state.pointer_mode_changed_at.lock() {
                     *changed_at = Instant::now();
                 }
@@ -803,11 +838,30 @@ fn process_pointer_report(
                 state.last_mode = next;
                 state.reset_all(orientation);
                 let _ = app.emit("pointer-mode-changed", next.as_str());
+                if let Err(error) = persist_result {
+                    let _ = app.emit(
+                        "joycon-stream-error",
+                        format!("Could not persist the pointer mode: {error}"),
+                    );
+                }
             }
         }
     } else {
-        state.mode_switch_started_at = None;
+        let short_press = state
+            .mode_switch_started_at
+            .take()
+            .is_some_and(|started_at| {
+                !state.mode_switch_fired
+                    && started_at.elapsed() < Duration::from_millis(pointer.mode_switch_hold_ms)
+            });
         state.mode_switch_fired = false;
+        if short_press
+            && PointerMode::from_u8(mapping_state.pointer_mode.load(Ordering::Relaxed))
+                == PointerMode::Motion
+        {
+            state.reset_motion(orientation);
+            let _ = app.emit("pointer-recentered", product_id);
+        }
     }
 
     let mode = PointerMode::from_u8(mapping_state.pointer_mode.load(Ordering::Relaxed));
@@ -815,6 +869,35 @@ fn process_pointer_report(
         release_pointer_buttons(state);
         state.last_mode = mode;
         state.reset_all(orientation);
+    }
+
+    let (decrease_control, increase_control) = if product_id == JOYCON_RIGHT_PRODUCT_ID {
+        ("joycon_right.sl", "joycon_right.sr")
+    } else {
+        ("joycon_left.sl", "joycon_left.sr")
+    };
+    let decrease_pressed = controls.contains(&decrease_control);
+    let increase_pressed = controls.contains(&increase_control);
+    let decrease_edge = decrease_pressed && !state.sensitivity_decrease_pressed;
+    let increase_edge = increase_pressed && !state.sensitivity_increase_pressed;
+    state.sensitivity_decrease_pressed = decrease_pressed;
+    state.sensitivity_increase_pressed = increase_pressed;
+    if mode == PointerMode::Motion && decrease_edge != increase_edge {
+        let next_sweep = adjusted_motion_sweep(pointer.motion.sweep_degrees, increase_edge);
+        if (next_sweep - pointer.motion.sweep_degrees).abs() > f32::EPSILON {
+            let persist_result = update_runtime_pointer_config(mapping_state, |pointer| {
+                pointer.motion.sweep_degrees = next_sweep;
+            });
+            pointer.motion.sweep_degrees = next_sweep;
+            let _ = app.emit("pointer-sweep-changed", next_sweep);
+            send_pointer_feedback_rumble(feedback.device.clone(), feedback.stream_state.clone());
+            if let Err(error) = persist_result {
+                let _ = app.emit(
+                    "joycon-stream-error",
+                    format!("Could not persist motion sensitivity: {error}"),
+                );
+            }
+        }
     }
     if mapping_state
         .pointer_mode_changed_at
@@ -865,7 +948,7 @@ fn process_pointer_report(
                     state.reset_motion(orientation);
                     Ok(())
                 } else {
-                    process_motion_pointer(orientation, &pointer.motion, state)
+                    process_motion_pointer(orientation, product_id, &pointer.motion, state)
                 }
             }
         }
@@ -941,8 +1024,87 @@ fn pointer_stick_velocity(
     (x / magnitude * speed, y / magnitude * speed)
 }
 
+fn adjusted_motion_sweep(current: f32, increase_sensitivity: bool) -> f32 {
+    if increase_sensitivity {
+        MOTION_SWEEP_PRESETS
+            .iter()
+            .rev()
+            .copied()
+            .find(|preset| *preset < current - 0.1)
+            .unwrap_or(MOTION_SWEEP_PRESETS[0])
+    } else {
+        MOTION_SWEEP_PRESETS
+            .iter()
+            .copied()
+            .find(|preset| *preset > current + 0.1)
+            .unwrap_or(*MOTION_SWEEP_PRESETS.last().unwrap_or(&120.0))
+    }
+}
+
+fn update_runtime_pointer_config(
+    mapping_state: &MappingRuntimeState,
+    update: impl FnOnce(&mut PointerConfig),
+) -> Result<(), String> {
+    let mut config = mapping_state
+        .config
+        .lock()
+        .map_err(|_| "Mapping runtime is unavailable".to_owned())?;
+    update(&mut config.pointer);
+    write_mapping_config(&config)
+}
+
+fn motion_projection(rotation_x: f32, rotation_z: f32, product_id: u16) -> (f32, f32) {
+    let horizontal_sign = if product_id == JOYCON_RIGHT_PRODUCT_ID {
+        -1.0
+    } else {
+        1.0
+    };
+    (rotation_z * horizontal_sign, -rotation_x)
+}
+
+fn motion_angles_from_origin(current: [f32; 4], origin: [f32; 4], product_id: u16) -> (f32, f32) {
+    let [rotation_x, _, rotation_z] = quaternion_delta_degrees(current, origin);
+    motion_projection(rotation_x, rotation_z, product_id)
+}
+
+fn smoothstep(value: f32) -> f32 {
+    let value = value.clamp(0.0, 1.0);
+    value * value * (3.0 - 2.0 * value)
+}
+
+fn motion_adaptive_gain(angular_speed: f32) -> f32 {
+    if angular_speed <= 10.0 {
+        0.45
+    } else if angular_speed < 60.0 {
+        0.45 + 0.55 * smoothstep((angular_speed - 10.0) / 50.0)
+    } else if angular_speed < 180.0 {
+        1.0 + 0.8 * smoothstep((angular_speed - 60.0) / 120.0)
+    } else {
+        1.8
+    }
+}
+
+fn pointer_display_size(state: &mut PointerDeviceState) -> Result<(f32, f32), String> {
+    let should_refresh = state
+        .display_size_checked_at
+        .map(|checked_at| checked_at.elapsed() >= Duration::from_secs(1))
+        .unwrap_or(true);
+    if should_refresh {
+        state.display_size_checked_at = Some(Instant::now());
+        match platform_pointer::display_size_at_cursor() {
+            Ok(size) => state.display_size = Some(size),
+            Err(error) if state.display_size.is_none() => return Err(error),
+            Err(_) => {}
+        }
+    }
+    state
+        .display_size
+        .ok_or_else(|| "Could not determine the pointer display size".to_owned())
+}
+
 fn process_motion_pointer(
     orientation: Option<&OrientationFrame>,
+    product_id: u16,
     config: &MotionPointerConfig,
     state: &mut PointerDeviceState,
 ) -> Result<(), String> {
@@ -950,24 +1112,47 @@ fn process_motion_pointer(
         return Ok(());
     };
     let current = orientation_components(orientation);
-    let Some(previous) = state.previous_orientation.replace(current) else {
+    let Some(origin) = state.motion_origin_orientation else {
+        state.motion_origin_orientation = Some(current);
+        state.previous_motion_angles = Some((0.0, 0.0));
+        state.last_motion_at = Some(Instant::now());
         return Ok(());
     };
-    let [rotation_x, _, rotation_z] = quaternion_delta_degrees(current, previous);
+    let now = Instant::now();
+    let elapsed = state
+        .last_motion_at
+        .replace(now)
+        .map(|previous_at| now.duration_since(previous_at).as_secs_f32())
+        .unwrap_or(0.0)
+        .clamp(0.001, 0.05);
+    let angles = motion_angles_from_origin(current, origin, product_id);
+    let previous_angles = state
+        .previous_motion_angles
+        .replace(angles)
+        .unwrap_or(angles);
+    let horizontal = angles.0 - previous_angles.0;
+    let vertical = angles.1 - previous_angles.1;
     let threshold = config.noise_threshold.max(0.0);
-    let horizontal = if rotation_z.abs() >= threshold {
-        rotation_z
+    let horizontal = if horizontal.abs() >= threshold {
+        horizontal
     } else {
         0.0
     };
-    let vertical = if rotation_x.abs() >= threshold {
-        rotation_x
+    let vertical = if vertical.abs() >= threshold {
+        vertical
     } else {
         0.0
     };
+    if horizontal == 0.0 && vertical == 0.0 {
+        return Ok(());
+    }
+    let angular_speed = horizontal.hypot(vertical) / elapsed;
+    let adaptive_gain = motion_adaptive_gain(angular_speed);
+    let (display_width, display_height) = pointer_display_size(state)?;
+    let sweep_degrees = config.sweep_degrees.clamp(30.0, 120.0);
     post_pointer_delta(
-        horizontal * config.sensitivity,
-        -vertical * config.sensitivity * config.vertical_ratio,
+        horizontal / sweep_degrees * display_width * adaptive_gain,
+        vertical / sweep_degrees * display_height * config.vertical_ratio * adaptive_gain,
         state,
     )
 }
@@ -1332,6 +1517,23 @@ fn write_joycon_output(device: &Arc<Mutex<hidapi::HidDevice>>, bytes: &[u8]) -> 
         .map_err(|error| format!("Could not write Joy-Con output report: {error}"))
 }
 
+fn send_pointer_feedback_rumble(device: Arc<Mutex<hidapi::HidDevice>>, state: StreamState) {
+    thread::spawn(move || {
+        let enable = joycon_subcommand(next_output_packet_counter(&state), 0x48, 0x01);
+        let pulse = rumble_report(next_output_packet_counter(&state), GENTLE_RUMBLE_FRAME);
+        let neutral = rumble_report(next_output_packet_counter(&state), NEUTRAL_RUMBLE_FRAME);
+        if write_joycon_output(&device, &enable).is_err() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(12));
+        if write_joycon_output(&device, &pulse).is_err() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(45));
+        let _ = write_joycon_output(&device, &neutral);
+    });
+}
+
 /// Send one deliberately short and gentle vibration pulse. This is only a
 /// manual experiment: callers must have already selected and opened the exact
 /// Joy-Con. Every path attempts the neutral frame after the pulse.
@@ -1598,8 +1800,8 @@ fn validate_mapping_config(config: &MappingConfig) -> Result<(), String> {
         return Err("Pointer stick settings are outside their supported range".to_owned());
     }
     let motion = &config.pointer.motion;
-    if !motion.sensitivity.is_finite()
-        || !(0.5..=30.0).contains(&motion.sensitivity)
+    if !motion.sweep_degrees.is_finite()
+        || !(30.0..=120.0).contains(&motion.sweep_degrees)
         || !motion.vertical_ratio.is_finite()
         || !(0.25..=2.0).contains(&motion.vertical_ratio)
         || !motion.noise_threshold.is_finite()
@@ -1672,7 +1874,15 @@ fn load_mapping_config() -> Result<MappingConfig, String> {
     if path.exists() {
         let content = fs::read_to_string(&path)
             .map_err(|error| format!("Could not read mapping configuration: {error}"))?;
-        let config: MappingConfig = serde_json::from_str(&content).map_err(|error| {
+        let raw_config: serde_json::Value = serde_json::from_str(&content).map_err(|error| {
+            format!(
+                "Invalid mapping configuration in {}: {error}",
+                path.display()
+            )
+        })?;
+        let legacy_motion_sensitivity = raw_config.pointer("/pointer/motion/sensitivity").is_some()
+            && raw_config.pointer("/pointer/motion/sweepDegrees").is_none();
+        let config: MappingConfig = serde_json::from_value(raw_config).map_err(|error| {
             format!(
                 "Invalid mapping configuration in {}: {error}",
                 path.display()
@@ -1680,7 +1890,7 @@ fn load_mapping_config() -> Result<MappingConfig, String> {
         })?;
         let (config, migrated) = migrate_mapping_config(config)?;
         validate_mapping_config(&config)?;
-        if migrated {
+        if migrated || legacy_motion_sensitivity {
             write_mapping_config(&config)?;
         }
         return Ok(config);
@@ -1917,6 +2127,62 @@ mod tests {
         assert!(!config.pointer.enabled);
         assert_eq!(config.pointer.mode, PointerMode::Stick);
         assert_eq!(config.pointer.mode_switch_hold_ms, 600);
+        assert_eq!(config.pointer.motion.sweep_degrees, 60.0);
+    }
+
+    #[test]
+    fn legacy_motion_sensitivity_is_ignored_in_favor_of_default_sweep() {
+        let mut value = serde_json::to_value(MappingConfig::default()).unwrap();
+        let motion = value
+            .pointer_mut("/pointer/motion")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap();
+        motion.remove("sweepDegrees");
+        motion.insert("sensitivity".to_owned(), serde_json::json!(8.0));
+        let config: MappingConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(config.pointer.motion.sweep_degrees, 60.0);
+        assert!(validate_mapping_config(&config).is_ok());
+    }
+
+    #[test]
+    fn motion_sweep_presets_step_in_both_directions() {
+        assert_eq!(adjusted_motion_sweep(60.0, true), 45.0);
+        assert_eq!(adjusted_motion_sweep(60.0, false), 90.0);
+        assert_eq!(adjusted_motion_sweep(30.0, true), 30.0);
+        assert_eq!(adjusted_motion_sweep(120.0, false), 120.0);
+        assert_eq!(adjusted_motion_sweep(55.0, true), 45.0);
+        assert_eq!(adjusted_motion_sweep(55.0, false), 60.0);
+    }
+
+    #[test]
+    fn adaptive_motion_gain_has_smooth_expected_anchors() {
+        assert!((motion_adaptive_gain(0.0) - 0.45).abs() < f32::EPSILON);
+        assert!((motion_adaptive_gain(10.0) - 0.45).abs() < f32::EPSILON);
+        assert!((motion_adaptive_gain(60.0) - 1.0).abs() < f32::EPSILON);
+        assert!((motion_adaptive_gain(180.0) - 1.8).abs() < f32::EPSILON);
+        assert!((0.45..1.0).contains(&motion_adaptive_gain(35.0)));
+        assert!((1.0..1.8).contains(&motion_adaptive_gain(120.0)));
+    }
+
+    #[test]
+    fn right_motion_projection_only_inverts_horizontal_axis() {
+        let left = motion_projection(4.0, 7.0, JOYCON_LEFT_PRODUCT_ID);
+        let right = motion_projection(4.0, 7.0, JOYCON_RIGHT_PRODUCT_ID);
+        assert_eq!(left, (7.0, -4.0));
+        assert_eq!(right, (-7.0, -4.0));
+    }
+
+    #[test]
+    fn motion_origin_rezeroes_absolute_pose_without_a_jump() {
+        let half_angle = 15.0_f32.to_radians();
+        let pose = [0.0, 0.0, half_angle.sin(), half_angle.cos()];
+        let recentered = motion_angles_from_origin(pose, pose, JOYCON_RIGHT_PRODUCT_ID);
+        assert!(recentered.0.abs() < 0.001);
+        assert!(recentered.1.abs() < 0.001);
+
+        let identity = [0.0, 0.0, 0.0, 1.0];
+        let before_recenter = motion_angles_from_origin(pose, identity, JOYCON_RIGHT_PRODUCT_ID);
+        assert!((before_recenter.0 + 30.0).abs() < 0.001);
     }
 
     #[test]

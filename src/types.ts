@@ -93,7 +93,7 @@ export type PointerConfig = {
     acceleration: number;
   };
   motion: {
-    sensitivity: number;
+    sweepDegrees: number;
     verticalRatio: number;
     noiseThreshold: number;
   };

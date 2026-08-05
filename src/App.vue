@@ -82,7 +82,7 @@ function defaultMappingConfig(): MappingConfig {
       mode: "stick",
       modeSwitchHoldMs: 600,
       stick: { deadzone: 0.12, maxSpeed: 1400, acceleration: 1.6 },
-      motion: { sensitivity: 8, verticalRatio: 0.85, noiseThreshold: 0.015 },
+      motion: { sweepDegrees: 60, verticalRatio: 0.85, noiseThreshold: 0.015 },
     },
   };
 }
@@ -127,20 +127,37 @@ const annotationTarget = ref<string>();
 const mappingFeedback = ref(t("mapping.initial"));
 const accessibilityGranted = ref(false);
 const pointerRuntimeStatus = ref<PointerRuntimeStatus | null>(null);
+const pointerHud = ref("");
+const pauseMappingsOnDebug = ref(false);
+const leftMotionResetKey = ref(0);
+const rightMotionResetKey = ref(0);
 const buttonPhase = ref<"pressed" | "released">("pressed");
 const stickPhase = ref<"moved" | "reset">("moved");
 let unlistenInput: UnlistenFn | undefined;
 let unlistenError: UnlistenFn | undefined;
 let unlistenPointerMode: UnlistenFn | undefined;
 let unlistenPointerError: UnlistenFn | undefined;
+let unlistenPointerSweep: UnlistenFn | undefined;
+let unlistenPointerRecenter: UnlistenFn | undefined;
+let pointerHudTimer: number | undefined;
 const lastPresentedAt = new Map<string, number>();
 const lastKeyOperation = new Map<string, string>();
 const lastIncomingReport = new Map<string, InputReport>();
+
+function showPointerHud(message: string) {
+  pointerHud.value = message;
+  if (pointerHudTimer !== undefined) window.clearTimeout(pointerHudTimer);
+  pointerHudTimer = window.setTimeout(() => {
+    pointerHud.value = "";
+    pointerHudTimer = undefined;
+  }, 1300);
+}
 
 watch(activePage, (page) => {
   if (page === "mappings") void checkMappingAccessibility();
   void syncMappingRuntime();
 });
+watch(pauseMappingsOnDebug, () => void syncMappingRuntime());
 watch(
   mappingConfig,
   () => {
@@ -665,7 +682,7 @@ async function syncMappingRuntime() {
   try {
     await invoke("set_mapping_runtime", {
       config: mappingConfig.value,
-      active: activePage.value === "mappings",
+      active: activePage.value === "mappings" || !pauseMappingsOnDebug.value,
     });
   } catch (error) {
     showError(error);
@@ -692,7 +709,7 @@ function resetMappingConfig() {
     .catch(showError);
 }
 async function copyAgentPrompt() {
-  const prompt = `You are editing VibeCon's local configuration at ~/.vibecon/mappings.json. Keep version 3 and preserve the pointer block. Pointer modes are stick and motion; the default mode switch is a 600 ms hold on Joy-Con (L) minus or Joy-Con (R) plus. In stick mode, L/R is left click and ZL/ZR is right click. In motion mode, L/R is left click, ZL+L or ZR+R is right click, and holding ZL/ZR freezes then recenters on release. Shortcut bindings may only use the existing controls and safe actions window_previous, window_next, and focus_codex. Preserve valid JSON and unique ids, then explain the change. Do not add shell commands or arbitrary automation.`;
+  const prompt = `You are editing VibeCon's local configuration at ~/.vibecon/mappings.json. Keep version 3 and preserve the pointer block. Pointer modes are stick and motion; the default mode switch is a 600 ms hold on Joy-Con (L) minus or Joy-Con (R) plus. In stick mode, L/R is left click and ZL/ZR is right click. In motion mode, L/R is left click, ZL+L or ZR+R is right click, holding ZL/ZR freezes then recenters on release, tapping minus/plus hard-recenters the current pose, and SL/SR select a slower/faster full-screen sweep preset. Keep motion.sweepDegrees at one of 30, 45, 60, 90, or 120. Shortcut bindings may only use the existing controls and safe actions window_previous, window_next, and focus_codex. Preserve valid JSON and unique ids, then explain the change. Do not add shell commands or arbitrary automation.`;
   try {
     await navigator.clipboard.writeText(prompt);
     mappingFeedback.value = t("mapping.copied");
@@ -881,6 +898,27 @@ onMounted(async () => {
       );
     },
   );
+  unlistenPointerSweep = await listen<number>(
+    "pointer-sweep-changed",
+    ({ payload }) => {
+      mappingConfig.value.pointer.motion.sweepDegrees = payload;
+      const message = t("mapping.sweepChanged", {
+        degrees: payload.toFixed(0),
+      });
+      mappingFeedback.value = message;
+      showPointerHud(message);
+    },
+  );
+  unlistenPointerRecenter = await listen<number>(
+    "pointer-recentered",
+    ({ payload }) => {
+      if (payload === 0x2007) rightMotionResetKey.value += 1;
+      else leftMotionResetKey.value += 1;
+      const message = t("mapping.pointerRecentered");
+      mappingFeedback.value = message;
+      showPointerHud(message);
+    },
+  );
   unlistenPointerError = await listen<string>(
     "pointer-runtime-error",
     ({ payload }) => {
@@ -896,12 +934,20 @@ onBeforeUnmount(() => {
   unlistenError?.();
   unlistenPointerMode?.();
   unlistenPointerError?.();
+  unlistenPointerSweep?.();
+  unlistenPointerRecenter?.();
+  if (pointerHudTimer !== undefined) window.clearTimeout(pointerHudTimer);
   if (isTauriDesktop) void invoke("stop_joycon_stream");
 });
 </script>
 
 <template>
   <main class="app-shell">
+    <Transition name="pointer-hud">
+      <div v-if="pointerHud" class="pointer-hud" role="status">
+        {{ pointerHud }}
+      </div>
+    </Transition>
     <header class="app-header">
       <div>
         <p class="eyebrow">{{ t("app.eyebrow") }}</p>
@@ -952,6 +998,9 @@ onBeforeUnmount(() => {
       :right-imu="rightImu"
       :left-orientation="leftOrientation"
       :right-orientation="rightOrientation"
+      :left-motion-reset-key="leftMotionResetKey"
+      :right-motion-reset-key="rightMotionResetKey"
+      :mappings-paused="pauseMappingsOnDebug"
       :buttons-readout="buttonsReadout"
       :sample-rate="sampleRate"
       :grouped-logs="groupedLogs"
@@ -963,6 +1012,7 @@ onBeforeUnmount(() => {
       :saved-annotation="savedAnnotation"
       :label-text="labelText"
       @select-controller="selectController"
+      @update-mappings-paused="pauseMappingsOnDebug = $event"
       @update-sample-rate="setSampleRate"
       @clear="clearLog"
       @annotate="openAnnotation"

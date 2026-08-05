@@ -27,6 +27,8 @@ const emit = defineEmits<{
   openAccessibility: [];
   reset: [];
 }>();
+
+const motionSweepPresets = [120, 90, 60, 45, 30] as const;
 const { t } = useI18n();
 
 const activePreset = computed(() =>
@@ -214,6 +216,15 @@ function updateMotion(key: keyof PointerConfig["motion"], value: number) {
           ><span>—</span><span>{{ t("mapping.pointerLiftMotion") }}</span>
         </div>
         <div>
+          <strong>{{ t("mapping.pointerAdjustSensitivity") }}</strong
+          ><span>—</span
+          ><span>{{ t("mapping.pointerAdjustSensitivityMotion") }}</span>
+        </div>
+        <div>
+          <strong>{{ t("mapping.pointerHardRecenter") }}</strong
+          ><span>—</span><span>{{ t("mapping.pointerTapRecenter") }}</span>
+        </div>
+        <div>
           <strong>{{ t("mapping.pointerSwitch") }}</strong
           ><span>{{ t("mapping.pointerHoldSwitch") }}</span
           ><span>{{ t("mapping.pointerHoldSwitch") }}</span>
@@ -278,25 +289,28 @@ function updateMotion(key: keyof PointerConfig["motion"], value: number) {
         </template>
         <template v-else>
           <label
-            >{{ t("mapping.pointerSensitivity")
-            }}<input
-              :value="props.config.pointer.motion.sensitivity"
-              min="1"
-              max="20"
-              step="0.5"
-              type="range"
+            >{{ t("mapping.pointerSweep")
+            }}<select
+              :value="props.config.pointer.motion.sweepDegrees"
               @input="
                 updateMotion(
-                  'sensitivity',
-                  Number(($event.target as HTMLInputElement).value),
+                  'sweepDegrees',
+                  Number(($event.target as HTMLSelectElement).value),
                 )
               "
-            /><output
-              >{{
-                props.config.pointer.motion.sensitivity.toFixed(1)
-              }}
-              px/°</output
-            ></label
+            >
+              <option
+                v-for="degrees in motionSweepPresets"
+                :key="degrees"
+                :value="degrees"
+              >
+                {{ degrees }}°
+              </option></select
+            ><output>{{
+              t("mapping.pointerSweepValue", {
+                degrees: props.config.pointer.motion.sweepDegrees.toFixed(0),
+              })
+            }}</output></label
           >
           <label
             >{{ t("mapping.pointerVerticalRatio")
