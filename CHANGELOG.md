@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.0.7
+
+### Pointer control
+
+- Add stick and motion pointer modes with one-handed click, drag, clutch, mode
+  switching, and pose recenter controls for both Joy-Cons.
+- Normalize motion to the active macOS display, add smooth speed-adaptive gain,
+  and expose `30°–120°` full-screen sweep presets.
+- Use SL/SR to adjust motion precision with HUD, vibration, and persisted local
+  configuration feedback.
+- Give the right Joy-Con a verified portrait projection and treat a short
+  minus/plus press as a real orientation zero for the pointer and 3D preview.
+
+### Debugging and development
+
+- Keep enabled mappings active on Input logs by default, with a temporary
+  **Pause mappings** switch that leaves HID inspection running.
+- Package and sign `VibeCon Dev.app` under a stable development identity so
+  macOS Accessibility permission survives ordinary local rebuilds.
+- Document the pointer pipeline, permissions, installation, and real-device
+  verification flow in English and Simplified Chinese.
+
 ## 0.0.4
 
 ### New features
