@@ -15,7 +15,7 @@ mod platform {
     };
     use core_graphics::{
         display::CGDisplay,
-        event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton},
+        event::{CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton},
         event_source::{CGEventSource, CGEventSourceStateID},
         geometry::CGPoint,
     };
@@ -137,6 +137,36 @@ mod platform {
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
+
+    pub fn post_scroll(delta: i32) -> Result<(), String> {
+        if !accessibility_granted() {
+            return Err("Accessibility is not granted to VibeCon".to_owned());
+        }
+        let source = event_source()?;
+        // Pixel units avoid coarse one-line jumps and let the stick velocity
+        // accumulate into smooth trackpad-like scrolling.
+        let event = CGEvent::new_scroll_event(source, 0, 1, delta, 0, 0)
+            .map_err(|_| "Could not create a macOS scroll event")?;
+        event.post(CGEventTapLocation::HID);
+        Ok(())
+    }
+
+    pub fn post_control_modifier(down: bool) -> Result<(), String> {
+        if !accessibility_granted() {
+            return Err("Accessibility is not granted to VibeCon".to_owned());
+        }
+        let source = event_source()?;
+        // kVK_Control (left Control) from Carbon HIToolbox/Events.h.
+        let event = CGEvent::new_keyboard_event(source, 59, down)
+            .map_err(|_| "Could not create a macOS Control event")?;
+        event.set_flags(if down {
+            CGEventFlags::CGEventFlagControl
+        } else {
+            CGEventFlags::empty()
+        });
+        event.post(CGEventTapLocation::HID);
+        Ok(())
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -176,6 +206,14 @@ mod platform {
     }
 
     pub fn post_button(_button: PointerButton, _down: bool) -> Result<(), String> {
+        Err("Pointer control is not implemented for this platform yet".to_owned())
+    }
+
+    pub fn post_scroll(_delta: i32) -> Result<(), String> {
+        Err("Pointer control is not implemented for this platform yet".to_owned())
+    }
+
+    pub fn post_control_modifier(_down: bool) -> Result<(), String> {
         Err("Pointer control is not implemented for this platform yet".to_owned())
     }
 }

@@ -30,13 +30,15 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "VibeCon ${{ github.ref_name }}"
           releaseBody: |
-            VibeCon 0.0.7 turns Joy-Con sticks and fused rotation into a practical macOS pointer-control preview.
+            VibeCon 0.0.8 turns Joy-Con sticks and fused rotation into a practical macOS pointer-control preview.
 
             Highlights:
             - Switch between stick and motion pointer modes by holding Joy-Con (L) minus or Joy-Con (R) plus.
             - Motion control uses display-normalized sweep presets, smooth speed-adaptive gain, and a real recentered pose origin.
             - SL/SR adjusts motion precision with a brief HUD and gentle vibration; the selected range persists locally.
             - L/R, ZL/ZR, and motion clutch combinations provide clicking, dragging, and repositioning with one hand.
+            - Stick press gestures now distinguish click, drag, and ZL/ZR scrolling without leaking Ctrl+wheel zoom events.
+            - Newly connected Joy-Cons are discovered and streamed automatically every five seconds.
             - Input logs keep enabled mappings active by default, with an explicit Pause mappings switch for focused debugging.
             - The signed development bundle keeps its stable Accessibility identity across ordinary Rust rebuilds.
 

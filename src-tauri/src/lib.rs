@@ -35,7 +35,10 @@ const JOYCON_RIGHT_PRODUCT_ID: u16 = 0x2007;
 const STICK_TRIGGER_THRESHOLD: f32 = 0.40;
 const MAPPING_COOLDOWN: Duration = Duration::from_millis(240);
 const POINTER_MODE_SWITCH_GUARD: Duration = Duration::from_millis(150);
+const STICK_DRAG_THRESHOLD: f32 = 0.28;
+const STICK_SCROLL_THRESHOLD: f32 = 0.20;
 const MOTION_SWEEP_PRESETS: [f32; 5] = [30.0, 45.0, 60.0, 90.0, 120.0];
+const STICK_SPEED_PRESETS: [f32; 6] = [400.0, 700.0, 1000.0, 1400.0, 1800.0, 2400.0];
 const JOYCON_IMU_SAMPLE_RATE_HZ: f32 = 208.0;
 const JOYCON_ACCEL_COUNTS_PER_G: f32 = 4096.0;
 const JOYCON_GYRO_COUNTS_PER_DEGREE_PER_SECOND: f32 = 16.4;
@@ -508,6 +511,9 @@ struct PointerDeviceState {
     previous_motion_angles: Option<(f32, f32)>,
     mode_switch_started_at: Option<Instant>,
     mode_switch_fired: bool,
+    stick_press_started_at: Option<Instant>,
+    stick_drag_active: bool,
+    stick_press_settle_until: Option<Instant>,
     sensitivity_decrease_pressed: bool,
     sensitivity_increase_pressed: bool,
     last_motion_at: Option<Instant>,
@@ -517,6 +523,9 @@ struct PointerDeviceState {
     right_button_down: bool,
     subpixel_x: f32,
     subpixel_y: f32,
+    scroll_remainder: f32,
+    scroll_last_report_at: Option<Instant>,
+    control_modifier_down: bool,
     permission_error_reported: bool,
 }
 
@@ -534,6 +543,9 @@ impl Default for PointerDeviceState {
             previous_motion_angles: None,
             mode_switch_started_at: None,
             mode_switch_fired: false,
+            stick_press_started_at: None,
+            stick_drag_active: false,
+            stick_press_settle_until: None,
             sensitivity_decrease_pressed: false,
             sensitivity_increase_pressed: false,
             last_motion_at: None,
@@ -543,6 +555,9 @@ impl Default for PointerDeviceState {
             right_button_down: false,
             subpixel_x: 0.0,
             subpixel_y: 0.0,
+            scroll_remainder: 0.0,
+            scroll_last_report_at: None,
+            control_modifier_down: false,
             permission_error_reported: false,
         }
     }
@@ -555,10 +570,15 @@ impl PointerDeviceState {
         self.last_motion_at = None;
         self.subpixel_x = 0.0;
         self.subpixel_y = 0.0;
+        self.scroll_remainder = 0.0;
+        self.scroll_last_report_at = None;
     }
 
     fn reset_all(&mut self, orientation: Option<&OrientationFrame>) {
         self.last_report_at = None;
+        self.stick_press_started_at = None;
+        self.stick_drag_active = false;
+        self.stick_press_settle_until = None;
         self.reset_motion(orientation);
     }
 }
@@ -714,6 +734,7 @@ fn start_joycon_stream(
                 }
             }
             release_pointer_buttons(&mut pointer_state);
+            release_pointer_modifier(&mut pointer_state);
             Ok(())
         })();
         if let Err(message) = result {
@@ -789,6 +810,7 @@ fn process_pointer_report(
     };
     if !active || !pointer.enabled {
         release_pointer_buttons(state);
+        release_pointer_modifier(state);
         state.reset_all(orientation);
         state.mode_switch_started_at = None;
         state.mode_switch_fired = false;
@@ -882,20 +904,47 @@ fn process_pointer_report(
     let increase_edge = increase_pressed && !state.sensitivity_increase_pressed;
     state.sensitivity_decrease_pressed = decrease_pressed;
     state.sensitivity_increase_pressed = increase_pressed;
-    if mode == PointerMode::Motion && decrease_edge != increase_edge {
-        let next_sweep = adjusted_motion_sweep(pointer.motion.sweep_degrees, increase_edge);
-        if (next_sweep - pointer.motion.sweep_degrees).abs() > f32::EPSILON {
-            let persist_result = update_runtime_pointer_config(mapping_state, |pointer| {
-                pointer.motion.sweep_degrees = next_sweep;
-            });
-            pointer.motion.sweep_degrees = next_sweep;
-            let _ = app.emit("pointer-sweep-changed", next_sweep);
-            send_pointer_feedback_rumble(feedback.device.clone(), feedback.stream_state.clone());
-            if let Err(error) = persist_result {
-                let _ = app.emit(
-                    "joycon-stream-error",
-                    format!("Could not persist motion sensitivity: {error}"),
-                );
+    if decrease_edge != increase_edge {
+        match mode {
+            PointerMode::Motion => {
+                let next_sweep = adjusted_motion_sweep(pointer.motion.sweep_degrees, increase_edge);
+                if (next_sweep - pointer.motion.sweep_degrees).abs() > f32::EPSILON {
+                    let persist_result = update_runtime_pointer_config(mapping_state, |pointer| {
+                        pointer.motion.sweep_degrees = next_sweep;
+                    });
+                    pointer.motion.sweep_degrees = next_sweep;
+                    let _ = app.emit("pointer-sweep-changed", next_sweep);
+                    send_pointer_feedback_rumble(
+                        feedback.device.clone(),
+                        feedback.stream_state.clone(),
+                    );
+                    if let Err(error) = persist_result {
+                        let _ = app.emit(
+                            "joycon-stream-error",
+                            format!("Could not persist motion sensitivity: {error}"),
+                        );
+                    }
+                }
+            }
+            PointerMode::Stick => {
+                let next_speed = adjusted_stick_speed(pointer.stick.max_speed, increase_edge);
+                if (next_speed - pointer.stick.max_speed).abs() > f32::EPSILON {
+                    let persist_result = update_runtime_pointer_config(mapping_state, |pointer| {
+                        pointer.stick.max_speed = next_speed;
+                    });
+                    pointer.stick.max_speed = next_speed;
+                    let _ = app.emit("pointer-stick-speed-changed", next_speed);
+                    send_pointer_feedback_rumble(
+                        feedback.device.clone(),
+                        feedback.stream_state.clone(),
+                    );
+                    if let Err(error) = persist_result {
+                        let _ = app.emit(
+                            "joycon-stream-error",
+                            format!("Could not persist stick sensitivity: {error}"),
+                        );
+                    }
+                }
             }
         }
     }
@@ -910,6 +959,7 @@ fn process_pointer_report(
 
     if !platform_pointer::accessibility_granted() {
         release_pointer_buttons(state);
+        release_pointer_modifier(state);
         state.reset_all(orientation);
         if !state.permission_error_reported {
             state.permission_error_reported = true;
@@ -934,15 +984,75 @@ fn process_pointer_report(
         )
     };
     let (left_down, right_down) = match mode {
-        PointerMode::Stick => (shoulder, trigger),
+        // In stick mode the physical stick press is a click (handled below),
+        // while the shoulder button is the secondary mouse button. The rear
+        // trigger is reserved as a Control-style modifier.
+        PointerMode::Stick => (false, shoulder),
         PointerMode::Motion => (shoulder && !trigger, shoulder && trigger),
     };
+    let stick_magnitude = stick_magnitude(report, product_id);
+    let scroll_layer =
+        mode == PointerMode::Stick && trigger && stick_magnitude >= STICK_SCROLL_THRESHOLD;
     let output_result = (|| {
-        update_pointer_button(state, PointerButton::Left, left_down)?;
+        if mode == PointerMode::Stick {
+            // ZL/ZR is a command layer. When it is combined with stick
+            // motion, consume the layer as scrolling instead of leaking a
+            // Control modifier into apps such as browsers (where Ctrl+wheel
+            // means zoom). Other button combinations still receive Control.
+            update_control_modifier(state, trigger && !scroll_layer)?;
+        } else {
+            release_pointer_modifier(state);
+        }
+        if mode == PointerMode::Motion {
+            update_pointer_button(state, PointerButton::Left, left_down)?;
+        }
         update_pointer_button(state, PointerButton::Right, right_down)?;
 
         match mode {
-            PointerMode::Stick => process_stick_pointer(report, product_id, &pointer.stick, state),
+            PointerMode::Stick => {
+                let stick_pressed = controls.iter().any(|control| {
+                    *control
+                        == if product_id == JOYCON_RIGHT_PRODUCT_ID {
+                            "joycon_right.stick_press"
+                        } else {
+                            "joycon_left.stick_press"
+                        }
+                });
+                let (stick_short_release, stick_drag_active, stick_drag_ended) =
+                    update_stick_gesture(
+                        state,
+                        stick_pressed,
+                        stick_magnitude >= STICK_DRAG_THRESHOLD,
+                    );
+                if stick_drag_ended {
+                    update_pointer_button(state, PointerButton::Left, false)?;
+                    let _ = app.emit("pointer-gesture", "drag-end");
+                }
+                if stick_short_release && !scroll_layer {
+                    click_pointer_button(state)?;
+                    let _ = app.emit("pointer-gesture", "stick-click");
+                }
+                if scroll_layer {
+                    update_pointer_button(state, PointerButton::Left, false)?;
+                    process_stick_scroll(report, product_id, &pointer.stick, state)
+                } else if stick_pressed && stick_drag_active {
+                    update_pointer_button(state, PointerButton::Left, true)?;
+                    process_stick_pointer(report, product_id, &pointer.stick, state)
+                } else if stick_pressed {
+                    // Keep the pointer still while a stick press is waiting
+                    // to become either a click or a drag.
+                    Ok(())
+                } else {
+                    let settling = state
+                        .stick_press_settle_until
+                        .is_some_and(|until| Instant::now() < until);
+                    if settling {
+                        Ok(())
+                    } else {
+                        process_stick_pointer(report, product_id, &pointer.stick, state)
+                    }
+                }
+            }
             PointerMode::Motion => {
                 if trigger {
                     state.reset_motion(orientation);
@@ -955,6 +1065,7 @@ fn process_pointer_report(
     })();
     if let Err(error) = output_result {
         state.reset_all(orientation);
+        release_pointer_modifier(state);
         if !state.permission_error_reported {
             state.permission_error_reported = true;
             let _ = app.emit(
@@ -1038,6 +1149,23 @@ fn adjusted_motion_sweep(current: f32, increase_sensitivity: bool) -> f32 {
             .copied()
             .find(|preset| *preset > current + 0.1)
             .unwrap_or(*MOTION_SWEEP_PRESETS.last().unwrap_or(&120.0))
+    }
+}
+
+fn adjusted_stick_speed(current: f32, increase_sensitivity: bool) -> f32 {
+    if increase_sensitivity {
+        STICK_SPEED_PRESETS
+            .iter()
+            .copied()
+            .find(|preset| *preset > current + 0.1)
+            .unwrap_or(*STICK_SPEED_PRESETS.last().unwrap_or(&2400.0))
+    } else {
+        STICK_SPEED_PRESETS
+            .iter()
+            .rev()
+            .copied()
+            .find(|preset| *preset < current - 0.1)
+            .unwrap_or(STICK_SPEED_PRESETS[0])
     }
 }
 
@@ -1205,6 +1333,106 @@ fn update_pointer_button(
     Ok(())
 }
 
+fn update_control_modifier(state: &mut PointerDeviceState, down: bool) -> Result<(), String> {
+    if state.control_modifier_down == down {
+        return Ok(());
+    }
+    platform_pointer::post_control_modifier(down)?;
+    state.control_modifier_down = down;
+    Ok(())
+}
+
+fn release_pointer_modifier(state: &mut PointerDeviceState) {
+    let _ = update_control_modifier(state, false);
+}
+
+fn click_pointer_button(state: &mut PointerDeviceState) -> Result<(), String> {
+    // A short stick press is intentionally emitted on release: only then do we
+    // know that it was not the beginning of a scroll-hold gesture.
+    update_pointer_button(state, PointerButton::Left, true)?;
+    update_pointer_button(state, PointerButton::Left, false)
+}
+
+fn update_stick_gesture(
+    state: &mut PointerDeviceState,
+    pressed: bool,
+    moved: bool,
+) -> (bool, bool, bool) {
+    if pressed {
+        state
+            .stick_press_started_at
+            .get_or_insert_with(Instant::now);
+        if moved {
+            state.stick_drag_active = true;
+        }
+        return (false, state.stick_drag_active, false);
+    }
+
+    let was_pressed = state.stick_press_started_at.is_some();
+    let was_drag = state.stick_drag_active;
+    state.stick_press_started_at = None;
+    state.stick_drag_active = false;
+    if was_pressed {
+        state.stick_press_settle_until = Some(Instant::now() + Duration::from_millis(90));
+    }
+    (was_pressed && !was_drag, false, was_pressed && was_drag)
+}
+
+fn stick_magnitude(report: &InputReport, product_id: u16) -> f32 {
+    let stick = if product_id == JOYCON_RIGHT_PRODUCT_ID {
+        report.right_stick.as_ref()
+    } else {
+        report.left_stick.as_ref()
+    };
+    stick
+        .map(|stick| stick.normalized_x.hypot(stick.normalized_y))
+        .unwrap_or(0.0)
+}
+
+fn process_stick_scroll(
+    report: &InputReport,
+    product_id: u16,
+    config: &StickPointerConfig,
+    state: &mut PointerDeviceState,
+) -> Result<(), String> {
+    let stick = if product_id == JOYCON_RIGHT_PRODUCT_ID {
+        report.right_stick.as_ref()
+    } else {
+        report.left_stick.as_ref()
+    };
+    let Some(stick) = stick else {
+        return Ok(());
+    };
+    let screen_y = if product_id == JOYCON_RIGHT_PRODUCT_ID {
+        -stick.normalized_y
+    } else {
+        stick.normalized_y
+    };
+    let (_x, y) = pointer_stick_velocity(
+        stick.normalized_x,
+        screen_y,
+        config.deadzone,
+        900.0,
+        config.acceleration,
+    );
+    let now = Instant::now();
+    let elapsed = state
+        .scroll_last_report_at
+        .map(|previous| now.duration_since(previous).as_secs_f32())
+        .unwrap_or(1.0 / 120.0)
+        .clamp(0.001, 0.05);
+    state.scroll_last_report_at = Some(now);
+    // Accumulate fractional pixels between reports so slow, gentle pushes
+    // remain smooth instead of becoming coarse one-line wheel jumps.
+    state.scroll_remainder += y * elapsed;
+    let whole = state.scroll_remainder.trunc() as i32;
+    if whole != 0 {
+        state.scroll_remainder -= whole as f32;
+        platform_pointer::post_scroll(whole)?;
+    }
+    Ok(())
+}
+
 fn release_pointer_buttons(state: &mut PointerDeviceState) {
     let _ = update_pointer_button(state, PointerButton::Left, false);
     let _ = update_pointer_button(state, PointerButton::Right, false);
@@ -1269,7 +1497,10 @@ fn pressed_button_controls(report: &InputReport, product_id: u16) -> Vec<&'stati
                 extra,
                 &[
                     ("joycon_left.minus", 0x01),
-                    ("joycon_left.stick_press", 0x04),
+                    // On the observed macOS native 0x30 path, Joy-Con (L)
+                    // reports its physical stick press in shared bit 0x08.
+                    // This differs from the usual combined-layout table.
+                    ("joycon_left.stick_press", 0x08),
                     ("joycon_left.capture", 0x20),
                 ],
             );
@@ -2155,6 +2386,16 @@ mod tests {
     }
 
     #[test]
+    fn stick_speed_presets_step_in_both_directions() {
+        assert_eq!(adjusted_stick_speed(1400.0, true), 1800.0);
+        assert_eq!(adjusted_stick_speed(1400.0, false), 1000.0);
+        assert_eq!(adjusted_stick_speed(400.0, false), 400.0);
+        assert_eq!(adjusted_stick_speed(2400.0, true), 2400.0);
+        assert_eq!(adjusted_stick_speed(1350.0, true), 1400.0);
+        assert_eq!(adjusted_stick_speed(1350.0, false), 1000.0);
+    }
+
+    #[test]
     fn adaptive_motion_gain_has_smooth_expected_anchors() {
         assert!((motion_adaptive_gain(0.0) - 0.45).abs() < f32::EPSILON);
         assert!((motion_adaptive_gain(10.0) - 0.45).abs() < f32::EPSILON);
@@ -2214,6 +2455,16 @@ mod tests {
         let report = report_from_bytes(bytes, JOYCON_RIGHT_PRODUCT_ID);
         assert!(pressed_button_controls(&report, JOYCON_RIGHT_PRODUCT_ID)
             .contains(&"joycon_right.plus"));
+    }
+
+    #[test]
+    fn observed_native_left_report_exposes_left_stick_press_on_shared_08() {
+        let mut bytes = vec![0_u8; 12];
+        bytes[0] = 0x30;
+        bytes[4] = 0x08;
+        let report = report_from_bytes(bytes, JOYCON_LEFT_PRODUCT_ID);
+        assert!(pressed_button_controls(&report, JOYCON_LEFT_PRODUCT_ID)
+            .contains(&"joycon_left.stick_press"));
     }
 
     #[test]

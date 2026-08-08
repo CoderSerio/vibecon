@@ -138,8 +138,13 @@ let unlistenError: UnlistenFn | undefined;
 let unlistenPointerMode: UnlistenFn | undefined;
 let unlistenPointerError: UnlistenFn | undefined;
 let unlistenPointerSweep: UnlistenFn | undefined;
+let unlistenPointerStickSpeed: UnlistenFn | undefined;
 let unlistenPointerRecenter: UnlistenFn | undefined;
+let unlistenPointerGesture: UnlistenFn | undefined;
 let pointerHudTimer: number | undefined;
+let controllerPollTimer: number | undefined;
+let refreshingControllers = false;
+const knownControllerIds = new Set<string>();
 const lastPresentedAt = new Map<string, number>();
 const lastKeyOperation = new Map<string, string>();
 const lastIncomingReport = new Map<string, InputReport>();
@@ -353,30 +358,33 @@ function macOSJoyConButtonLabels(entry: LogEntry): Label[] {
   }
   if (entry.report.report_id === 0x30 && entry.report.bytes.length >= 6) {
     const nativeBits: Array<{ byte: 3 | 4 | 5; mask: number; target: string }> =
-      [
-        { byte: 3, mask: 0x01, target: "joycon_right.y" },
-        { byte: 3, mask: 0x02, target: "joycon_right.x" },
-        { byte: 3, mask: 0x04, target: "joycon_right.b" },
-        { byte: 3, mask: 0x08, target: "joycon_right.a" },
-        { byte: 3, mask: 0x10, target: "joycon_right.sr" },
-        { byte: 3, mask: 0x20, target: "joycon_right.sl" },
-        { byte: 3, mask: 0x40, target: "joycon_right.r" },
-        { byte: 3, mask: 0x80, target: "joycon_right.zr" },
-        { byte: 4, mask: 0x01, target: "joycon_left.minus" },
-        { byte: 4, mask: 0x02, target: "joycon_right.plus" },
-        { byte: 4, mask: 0x04, target: "joycon_left.stick_press" },
-        { byte: 4, mask: 0x08, target: "joycon_right.stick_press" },
-        { byte: 4, mask: 0x10, target: "joycon_right.home" },
-        { byte: 4, mask: 0x20, target: "joycon_left.capture" },
-        { byte: 5, mask: 0x01, target: "joycon_left.dpad_down" },
-        { byte: 5, mask: 0x02, target: "joycon_left.dpad_up" },
-        { byte: 5, mask: 0x04, target: "joycon_left.dpad_right" },
-        { byte: 5, mask: 0x08, target: "joycon_left.dpad_left" },
-        { byte: 5, mask: 0x10, target: "joycon_left.sr" },
-        { byte: 5, mask: 0x20, target: "joycon_left.sl" },
-        { byte: 5, mask: 0x40, target: "joycon_left.l" },
-        { byte: 5, mask: 0x80, target: "joycon_left.zl" },
-      ];
+      isRight
+        ? [
+            { byte: 3, mask: 0x01, target: "joycon_right.y" },
+            { byte: 3, mask: 0x02, target: "joycon_right.x" },
+            { byte: 3, mask: 0x04, target: "joycon_right.b" },
+            { byte: 3, mask: 0x08, target: "joycon_right.a" },
+            { byte: 3, mask: 0x10, target: "joycon_right.sr" },
+            { byte: 3, mask: 0x20, target: "joycon_right.sl" },
+            { byte: 3, mask: 0x40, target: "joycon_right.r" },
+            { byte: 3, mask: 0x80, target: "joycon_right.zr" },
+            { byte: 4, mask: 0x02, target: "joycon_right.plus" },
+            { byte: 4, mask: 0x08, target: "joycon_right.stick_press" },
+            { byte: 4, mask: 0x10, target: "joycon_right.home" },
+          ]
+        : [
+            { byte: 4, mask: 0x01, target: "joycon_left.minus" },
+            { byte: 4, mask: 0x08, target: "joycon_left.stick_press" },
+            { byte: 4, mask: 0x20, target: "joycon_left.capture" },
+            { byte: 5, mask: 0x01, target: "joycon_left.dpad_down" },
+            { byte: 5, mask: 0x02, target: "joycon_left.dpad_up" },
+            { byte: 5, mask: 0x04, target: "joycon_left.dpad_right" },
+            { byte: 5, mask: 0x08, target: "joycon_left.dpad_left" },
+            { byte: 5, mask: 0x10, target: "joycon_left.sr" },
+            { byte: 5, mask: 0x20, target: "joycon_left.sl" },
+            { byte: 5, mask: 0x40, target: "joycon_left.l" },
+            { byte: 5, mask: 0x80, target: "joycon_left.zl" },
+          ];
     return nativeBits.flatMap(({ byte, mask, target }) => {
       const current = entry.report.bytes[byte];
       const prior =
@@ -500,7 +508,7 @@ function applyReport(
         {
           "joycon_left.minus": 0x01,
           "joycon_right.plus": 0x02,
-          "joycon_left.stick_press": 0x04,
+          "joycon_left.stick_press": 0x08,
           "joycon_right.stick_press": 0x08,
           "joycon_right.home": 0x10,
           "joycon_left.capture": 0x20,
@@ -781,17 +789,78 @@ function selectController(controller: Controller) {
   statusKind.value = "connected";
 }
 async function refreshControllers() {
+  if (refreshingControllers) return;
   if (!isTauriDesktop) {
     showError("Browser preview detected. Run `pnpm tauri dev` for HID access.");
     return;
   }
+  refreshingControllers = true;
   status.value = "Checking HID devices…";
   try {
-    controllers.value = await invoke<Controller[]>("list_joycons");
-    if (!selectedControllers.value.length && controllers.value.length)
-      selectController(controllers.value[0]);
+    const discovered = await invoke<Controller[]>("list_joycons");
+    const discoveredIds = new Set(discovered.map(({ id }) => id));
+    const disconnected = selectedControllers.value.filter(
+      ({ id }) => !discoveredIds.has(id),
+    );
+    for (const controller of disconnected) {
+      await invoke("stop_joycon_stream", { id: controller.id });
+      if (controller.product_id === 0x2007) {
+        rightOrientation.value = null;
+        rightImu.value = null;
+      } else {
+        leftOrientation.value = null;
+        leftImu.value = null;
+      }
+      lastKeyOperation.delete(controller.id);
+      lastIncomingReport.delete(controller.id);
+    }
+
+    controllers.value = discovered;
+    selectedControllers.value = selectedControllers.value.filter(({ id }) =>
+      discoveredIds.has(id),
+    );
+
+    // Auto-select only devices that appeared since the previous scan. This
+    // keeps an intentional manual deselection intact while still making a
+    // newly connected Joy-Con immediately usable.
+    for (const controller of discovered) {
+      const isNew = !knownControllerIds.has(controller.id);
+      const isSelected = selectedControllers.value.some(
+        ({ id }) => id === controller.id,
+      );
+      if (isNew && !isSelected && selectedControllers.value.length < 2) {
+        selectedControllers.value = [...selectedControllers.value, controller];
+        lastKeyOperation.delete(controller.id);
+        lastIncomingReport.delete(controller.id);
+      }
+      // Starting an already active stream is idempotent in Rust. Retrying it
+      // on every discovery pass also reconnects a stream whose Bluetooth HID
+      // reader exited while the device itself remained discoverable.
+      if (
+        selectedControllers.value.some(({ id }) => id === controller.id)
+      ) {
+        await invoke("start_joycon_stream", { id: controller.id }).catch(
+          showError,
+        );
+      }
+      knownControllerIds.add(controller.id);
+    }
+    for (const id of [...knownControllerIds]) {
+      if (!discoveredIds.has(id)) knownControllerIds.delete(id);
+    }
+    if (selectedControllers.value.length) {
+      status.value = `Streaming ${selectedControllers.value
+        .map(({ name }) => name)
+        .join(" + ")}. Move a stick or press a button.`;
+      statusKind.value = "connected";
+    } else {
+      status.value = "Choose one or two controllers to start streaming.";
+      statusKind.value = "";
+    }
   } catch (error) {
     showError(error);
+  } finally {
+    refreshingControllers = false;
   }
 }
 function openAnnotation(entry: LogEntry) {
@@ -909,12 +978,34 @@ onMounted(async () => {
       showPointerHud(message);
     },
   );
+  unlistenPointerStickSpeed = await listen<number>(
+    "pointer-stick-speed-changed",
+    ({ payload }) => {
+      mappingConfig.value.pointer.stick.maxSpeed = payload;
+      const message = t("mapping.stickSpeedChanged", {
+        speed: payload.toFixed(0),
+      });
+      mappingFeedback.value = message;
+      showPointerHud(message);
+    },
+  );
   unlistenPointerRecenter = await listen<number>(
     "pointer-recentered",
     ({ payload }) => {
       if (payload === 0x2007) rightMotionResetKey.value += 1;
       else leftMotionResetKey.value += 1;
       const message = t("mapping.pointerRecentered");
+      mappingFeedback.value = message;
+      showPointerHud(message);
+    },
+  );
+  unlistenPointerGesture = await listen<"stick-click" | "scroll-ready">(
+    "pointer-gesture",
+    ({ payload }) => {
+      const message =
+        payload === "stick-click"
+          ? t("mapping.pointerStickClickDetected")
+          : t("mapping.pointerScrollReady");
       mappingFeedback.value = message;
       showPointerHud(message);
     },
@@ -928,6 +1019,9 @@ onMounted(async () => {
     },
   );
   await refreshControllers();
+  controllerPollTimer = window.setInterval(() => {
+    void refreshControllers();
+  }, 5000);
 });
 onBeforeUnmount(() => {
   unlistenInput?.();
@@ -935,8 +1029,11 @@ onBeforeUnmount(() => {
   unlistenPointerMode?.();
   unlistenPointerError?.();
   unlistenPointerSweep?.();
+  unlistenPointerStickSpeed?.();
   unlistenPointerRecenter?.();
+  unlistenPointerGesture?.();
   if (pointerHudTimer !== undefined) window.clearTimeout(pointerHudTimer);
+  if (controllerPollTimer !== undefined) window.clearInterval(controllerPollTimer);
   if (isTauriDesktop) void invoke("stop_joycon_stream");
 });
 </script>
@@ -970,23 +1067,9 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </header>
-    <nav class="app-tabs" aria-label="Application pages">
-      <button
-        class="app-button tab"
-        :class="{ selected: activePage === 'debug' }"
-        @click="activePage = 'debug'"
-      >
-        {{ t("app.debug") }}</button
-      ><button
-        class="app-button tab"
-        :class="{ selected: activePage === 'mappings' }"
-        @click="activePage = 'mappings'"
-      >
-        {{ t("app.mappings") }}
-      </button>
-    </nav>
     <DebugPage
       :show-logs="activePage === 'debug'"
+      :active-page="activePage"
       :controllers="controllers"
       :selected-controllers="selectedControllers"
       :status="status"
@@ -1011,6 +1094,7 @@ onBeforeUnmount(() => {
       :built-in-labels="builtInLabels"
       :saved-annotation="savedAnnotation"
       :label-text="labelText"
+      @navigate="activePage = $event"
       @select-controller="selectController"
       @update-mappings-paused="pauseMappingsOnDebug = $event"
       @update-sample-rate="setSampleRate"

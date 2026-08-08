@@ -413,6 +413,9 @@ p {
   gap: 8px;
   margin-top: 20px;
 }
+.debug-page-tabs {
+  margin: 16px 0 0;
+}
 .tab.selected {
   border-color: #7de6c4;
   background: #254d44;

@@ -15,6 +15,7 @@ import type {
 type LogGroup = { timestamp: Date; entries: LogEntry[] };
 const props = defineProps<{
   showLogs: boolean;
+  activePage: "debug" | "mappings";
   controllers: Controller[];
   selectedControllers: Controller[];
   status: string;
@@ -44,6 +45,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  navigate: [page: "debug" | "mappings"];
   selectController: [controller: Controller];
   updateMappingsPaused: [paused: boolean];
   updateSampleRate: [value: string];
@@ -239,6 +241,25 @@ function resetThreePose() {
       />
     </div>
   </section>
+
+  <nav class="app-tabs debug-page-tabs" aria-label="Application pages">
+    <button
+      class="app-button tab"
+      :class="{ selected: props.activePage === 'debug' }"
+      type="button"
+      @click="emit('navigate', 'debug')"
+    >
+      {{ t("app.debug") }}
+    </button>
+    <button
+      class="app-button tab"
+      :class="{ selected: props.activePage === 'mappings' }"
+      type="button"
+      @click="emit('navigate', 'mappings')"
+    >
+      {{ t("app.mappings") }}
+    </button>
+  </nav>
 
   <section v-if="showLogs" class="panel transcript-panel">
     <div class="section-heading log-heading">

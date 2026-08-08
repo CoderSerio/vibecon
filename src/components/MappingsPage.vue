@@ -205,11 +205,21 @@ function updateMotion(key: keyof PointerConfig["motion"], value: number) {
         </div>
         <div>
           <strong>{{ t("mapping.pointerLeftClick") }}</strong
-          ><span>L / R</span><span>L / R</span>
+          ><span>{{ t("mapping.pointerLeftClickStick") }}</span
+          ><span>{{ t("mapping.pointerLeftClickMotion") }}</span>
+        </div>
+        <div>
+          <strong>{{ t("mapping.pointerScroll") }}</strong
+          ><span>{{ t("mapping.pointerScrollStick") }}</span><span>—</span>
         </div>
         <div>
           <strong>{{ t("mapping.pointerRightClick") }}</strong
-          ><span>ZL / ZR</span><span>ZL + L / ZR + R</span>
+          ><span>{{ t("mapping.pointerRightClickStick") }}</span
+          ><span>{{ t("mapping.pointerRightClickMotion") }}</span>
+        </div>
+        <div>
+          <strong>{{ t("mapping.pointerCommand") }}</strong
+          ><span>{{ t("mapping.pointerCommandStick") }}</span><span>—</span>
         </div>
         <div>
           <strong>{{ t("mapping.pointerLift") }}</strong
@@ -217,7 +227,7 @@ function updateMotion(key: keyof PointerConfig["motion"], value: number) {
         </div>
         <div>
           <strong>{{ t("mapping.pointerAdjustSensitivity") }}</strong
-          ><span>—</span
+          ><span>{{ t("mapping.pointerAdjustSensitivityStick") }}</span
           ><span>{{ t("mapping.pointerAdjustSensitivityMotion") }}</span>
         </div>
         <div>

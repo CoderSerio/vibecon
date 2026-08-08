@@ -18,6 +18,8 @@ local third-party reference GLBs are intentionally excluded.
 
 - Either Joy-Con stick moves the cursor continuously with a center deadzone and
   acceleration curve.
+- SL steps down through the stick speed presets; SR steps up. Each accepted
+  change shows the HUD, vibrates once, and persists the selected `maxSpeed`.
 - L/R sends left click and supports dragging; ZL/ZR sends right click.
 - Holding minus/plus for about 600 ms switches to Motion mode once, without
   also firing the short-press recenter action.
